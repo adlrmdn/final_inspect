@@ -1,9 +1,9 @@
-# UI/UX Style Guide: Chimera MES
+# UI/UX Style Guide: Chimera QC Console
 
-This document defines the high-fidelity aesthetic structure for **Chimera MES** (Manufacturing Execution System).
+This document defines the high-fidelity aesthetic structure for the **Chimera QC Console** (Quality Control System).
 
-## 1. Design Philosophy: "Futuristic Industrial Delight"
-The platform balances the rigor of industrial manufacturing with the delight of a futuristic interface. It should feel "airy," "intelligent," and "effortless."
+## 1. Design Philosophy: "Futuristic Quality Inspection Delight"
+The platform balances the rigor of industrial quality inspection with the delight of a futuristic, high-fidelity interface. It should feel "airy," "intelligent," and "effortless."
 
 ### Core Principles:
 - **Azure White Base**: All backgrounds use a specialized Azure White (`#F0FBFF`) to reduce eye strain while maintaining a high-tech feel.
@@ -21,12 +21,12 @@ The platform balances the rigor of industrial manufacturing with the delight of 
 ### Aesthetic Structure
 - **Bento-Grid Layout**: Information is modularized into cards with a `24px` to `32px` border radius.
 - **Neon Shadows**: Active elements emit a soft, colored glow (`box-shadow`) matching their gradient.
-- **Interactive HUD Nodes**: Hexagonal nodes for the VSM timeline that scale and glow when active.
+- **Micro-Interactions**: Active cursor spotlights on cards, scanning grid overlays, typing streams, and microphone concentric ripple circles.
 
 ## 3. Typography: The "Outfit" Identity
 - **Brand Headings**: Use **Outfit (800 weight)** with `-0.04em` letter-spacing.
 - **Interface Text**: Use **Inter** for high-fidelity legibility in data grids and labels.
 
 ## 4. Branding Distribution
-- **Main Titles**: Always use the full "Manufacturing Execution System".
-- **Copyright/Footers**: Always use "Chimera MES // Industrial Core".
+- **Main Titles**: Always use the full "Quality Control Console".
+- **Copyright/Footers**: Always use "Chimera QC Console // Quality Control System".

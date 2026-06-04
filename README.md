@@ -1,9 +1,9 @@
-# Chimera MES // Industrial Core
-## Manufacturing Execution System (MES) Offline Quality Control Console
+# Chimera QC Console // Quality Control Core
+## Quality Control System (QCS) Offline Console
 
-Welcome to the **Chimera MES Quality Control Console**—a state-of-the-art, high-fidelity offline-first enterprise web client designed using robust **Object-Oriented Programming (OOP)** patterns.
+Welcome to the **Chimera QC Console**—a state-of-the-art, high-fidelity offline-first enterprise quality control application designed using robust **Object-Oriented Programming (OOP)** patterns.
 
-The console enables remote field engineers and line operators to run mission-critical quality control inspections inside an offline environment (running under the **Tauri v2** shell framework), automatically caching inspection reports locally in a robust database interface and synchronizing them sequentially to the master enterprise network whenever connection is restored.
+The console enables remote field engineers and line operators to run mission-critical quality control inspections inside an offline environment (running under the **Tauri v2** desktop shell framework), automatically caching inspection reports locally using secure local storage and synchronizing them sequentially to the master enterprise network whenever connection is restored.
 
 ---
 
@@ -65,7 +65,7 @@ classDiagram
 
 ### Singleton Service Providers
 - **`DatabaseService`** (`src/services/database_service.ts`):
-  Uses the Repository pattern to abstract SQLite database cache files (backed by localStorage in browser sandbox) to persist templates and reports offline.
+  Uses the Repository pattern to abstract offline storage keys (`chimera_qc_templates` and `chimera_qc_reports` in LocalStorage) to persist templates and reports.
 - **`SyncEngine`** (`src/services/sync_engine.ts`):
   Coordinates network-state monitoring (`window.online`/`offline`), manages the synchronization queue, and sequential background REST submissions.
 
@@ -91,25 +91,25 @@ stateDiagram-v2
 
 ## 3. High-Level System Design
 
-Chimera MES uses a decoupled offline-first architecture bridging native OS capabilities with a modern, high-performance UI:
+Chimera QC Console uses a decoupled offline-first architecture bridging native OS capabilities with a modern, high-performance UI:
 
-*   **Presentation (React 19 + TypeScript):** Elegant mobile/desktop responsive Bento interface.
-*   **Bridge (Tauri v2 Core - Rust):** Secure system broker mapping web calls to native file operations, DB bindings, and hardware intents.
-*   **Offline Persistence (SQLite / LocalStorage):** Local cache preserving transactional and reference data.
+*   **Presentation (React 19 + TypeScript):** Elegant bento interface optimized to fit standard viewports without clipping.
+*   **Bridge (Tauri v2 Core - Rust):** Secure system broker mapping web calls to native desktop window actions.
+*   **Offline Persistence (LocalStorage):** Local storage layer preserving templates and completed reports.
 *   **Enterprise Remote (Information Base API):** Master enterprise databases.
 
 ---
 
 ## 4. UI/UX Style Guide: Futuristic Industrial Design
 
-To reduce operators' fatigue in high-stress assembly lines, Chimera MES adheres to a **Futuristic Industrial Delight** aesthetic:
+To reduce operators' fatigue in high-stress assembly lines, Chimera QC Console adheres to a **Futuristic Quality Inspection Delight** aesthetic:
 
 *   **Palette:**
-    *   *Azure White* (`#F5FCFF`) Background reduces strain.
-    *   *Royal Blue* (`#3B82F6`) Active primary actions.
+    *   *Azure White* (`#F0FBFF`) Background reduces strain.
+    *   *Royal Blue* (`#2563EB`) Active primary actions.
     *   *Teal Blue* (`#0D9488`) Success states.
     *   *Deep Ocean* (`#0F172A`) Clear headings and text.
-*   **Layout:** Bento-Grid layouts with rounded margins (`24px`), soft glassmorphism shadows, and glowing active borders.
+*   **Layout:** Bento-Grid layouts with rounded margins (`20px`), soft glassmorphism shadows, and active cursor spotlight glow boundaries.
 *   **Typography:** Modern `Outfit` brand typography alongside `Inter` interface body text.
 
 ---
@@ -148,4 +148,4 @@ Outputs build packages to: `src-tauri/target/release/bundle/`
 
 ---
 
-*Chimera MES // Industrial Core // copyright © 2026*
+*Chimera QC Console // Quality Control Core // copyright © 2026*

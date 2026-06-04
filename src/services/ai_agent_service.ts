@@ -39,15 +39,15 @@ export class AIAgentService {
     if (query.includes('open') || query.includes('go to') || query.includes('show') || query.includes('buka') || query.includes('tampilkan') || query.includes('ke')) {
       if (query.includes('fabric') || query.includes('defect') || query.includes('roll') || query.includes('kain') || query.includes('rol') || query.includes('tekstil')) {
         response = {
-          thinking: "Intent cocok: NAVIGASI. Parameter: fabric_v1. Mengarahkan viewport ke Formulir Kontrol Kualitas Kain.",
+          thinking: "Intent cocok: NAVIGASI. Parameter: fabric_v0. Mengarahkan viewport ke Formulir Kontrol Kualitas Kain.",
           reply: "Mengarahkan konsol ke template Kontrol Kualitas Kain...",
-          action: { type: 'navigate', target: 'fabric_v1' }
+          action: { type: 'navigate', target: 'fabric_v0' }
         };
       } else if (query.includes('pack') || query.includes('box') || query.includes('shipping') || query.includes('kemas') || query.includes('kemasan') || query.includes('boks') || query.includes('dus') || query.includes('kotak')) {
         response = {
-          thinking: "Intent cocok: NAVIGASI. Parameter: pack_v2. Mengarahkan viewport ke Formulir Kontrol Kualitas Pengemasan.",
+          thinking: "Intent cocok: NAVIGASI. Parameter: pack_v0. Mengarahkan viewport ke Formulir Kontrol Kualitas Pengemasan.",
           reply: "Mengarahkan konsol ke template Kontrol Kualitas Pengemasan...",
-          action: { type: 'navigate', target: 'pack_v2' }
+          action: { type: 'navigate', target: 'pack_v0' }
         };
       } else if (query.includes('dashboard') || query.includes('core') || query.includes('back') || query.includes('return') || query.includes('dasbor') || query.includes('utama') || query.includes('kembali')) {
         response = {

@@ -1,5 +1,6 @@
 import { QCInspectionTemplate } from '../models/qc_template';
 import { QCInspectionReport } from '../models/qc_report';
+import { invoke } from '@tauri-apps/api/core';
 
 export class DatabaseService {
   private static instance: DatabaseService | null = null;
@@ -21,9 +22,9 @@ export class DatabaseService {
     const existing = this.getTemplates();
     const defaults = [
       new QCInspectionTemplate(
-        'fabric_v1',
+        'fabric_v0',
         'Fabric Quality Control',
-        'v1.2',
+        'v0.1',
         'Scan fabric rolls to log defects, verify width variants, and calculate variance tolerances.',
         [
           { name: 'batch_id', type: 'text', label: 'Material / Batch Identifier', required: true, placeholder: 'e.g. BTC-9812-FLX' },
@@ -32,9 +33,9 @@ export class DatabaseService {
         ]
       ),
       new QCInspectionTemplate(
-        'pack_v2',
+        'pack_v0',
         'Packaging Quality Control',
-        'v2.0',
+        'v0.1',
         'Audit and log structural integrity, box dimensional measurements, and labeling accuracy.',
         [
           { name: 'batch_id', type: 'text', label: 'Packaging Batch ID', required: true, placeholder: 'e.g. PKG-5501-A' },
@@ -97,5 +98,61 @@ export class DatabaseService {
 
   public saveReports(reports: QCInspectionReport[]): void {
     localStorage.setItem(this.STORAGE_KEY_REPORTS, JSON.stringify(reports.map(r => r.toJSON())));
+  }
+
+  // --- POSTGRES SYNC BRIDGE ---
+  
+  /**
+   * Checks connection health to PostgreSQL database
+   */
+  public async isPostgresOnline(): Promise<boolean> {
+    try {
+      return await invoke<boolean>('pg_test_connection');
+    } catch (e) {
+      console.warn('PostgreSQL offline or unreachable:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Pushes a single template to PostgreSQL database
+   */
+  public async saveTemplateToPostgres(template: QCInspectionTemplate): Promise<void> {
+    try {
+      await invoke('pg_save_template', {
+        template: {
+          id: template.id,
+          title: template.title,
+          version: template.version,
+          description: template.description,
+          fields: template.fields
+        }
+      });
+    } catch (e) {
+      console.error('Failed to save template to PostgreSQL:', e);
+      throw e;
+    }
+  }
+
+  /**
+   * Pushes a single report to PostgreSQL database
+   */
+  public async saveReportToPostgres(report: QCInspectionReport): Promise<void> {
+    try {
+      const serialized = report.toJSON();
+      await invoke('pg_save_report', {
+        report: {
+          id: serialized.id,
+          template_id: serialized.template_id,
+          operator_id: serialized.operator_id,
+          payload: serialized.payload,
+          status: serialized.status,
+          created_at: serialized.created_at
+        }
+      });
+    } catch (e) {
+      console.error('Failed to save report to PostgreSQL:', e);
+      throw e;
+    }
   }
 }

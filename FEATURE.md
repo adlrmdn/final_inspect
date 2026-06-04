@@ -1,17 +1,18 @@
 # Features & Capabilities
 
 ## 1. Offline Synchronization Engine
-- **Template Ingestion:** Ability to download multiple JSON-based QC templates while online.
-- **Background Sync:** Automatically detects internet restoration and pushes `pending_sync` records sequentially.
-- **Sync Dashboard:** A visual indicator showing how many items are waiting to sync, currently syncing, or failed.
+- **Template Ingestion:** Seeded with standard QC templates (`fabric_v1`, `pack_v2`) driving forms dynamically.
+- **Background Sync:** Automatically detects internet restoration via `online`/`offline` web listeners and sequentially pushes `pending_sync` reports.
+- **Sync Badge Indicator:** Live UI badge ("Core Online" vs "Core Offline") and sync labels displaying active pending counts.
 
 ## 2. Dynamic Form Rendering
-- The UI dynamically generates input fields (toggles, text boxes, numeric spinners) based on the JSON schema defined in the `templates` table.
-- Supports logic branching (e.g., "If 'Defect Found' is true, show 'Defect Description' text area").
+- The UI dynamically generates form fields (inputs, boolean toggles, numeric spin controls) based on the inspection template's JSON schema definitions.
+- Supports validation feedback for min/max numeric limits.
 
-## 3. Data Integrity & Validation
-- **Local Validation:** Ensures required fields are filled and numbers are within expected bounds before allowing the user to "Save Offline".
-- **Conflict Handling:** Because QC inspections are generally append-only (creating new records), conflict resolution is minimal. However, local UUIDs prevent duplicate submissions.
+## 3. High-Fidelity Conversational Assistant (Kaizen)
+- The **Kaizen AI Quality Assistant** accepts voice or keyboard inputs.
+- Parses intents locally to execute core operational commands ("Open Fabric Quality Control", "Run Offline Diagnostic", etc.).
 
-## 4. Hardware Integrations (Planned)
-- **Barcode/QR Scanner:** Integration with Android intents to populate fields (like `roll_id`) quickly using the device's hardware scanner.
+## 4. Hardware Integrations (Fully Implemented)
+- **Holographic QRIS Barcode/QR Scanner:** A popped-out center scanning button sits in the available operations dock.
+- Triggering the scanner activates an animated cyber-cyan grid overlay and vertical neon sweeping laser sweeps across the command center, mimicking dynamic holographic optical capture.
