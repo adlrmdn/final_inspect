@@ -97,7 +97,12 @@ export default function Dashboard({
   }, []);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatEndRef.current) {
+      const scrollContainer = chatEndRef.current.parentElement;
+      if (scrollContainer) {
+        scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+      }
+    }
   }, [chatHistory, chatEndRef]);
 
   // Holographic QR Scanner trigger using ScannerService

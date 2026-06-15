@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import './App.css';
 import Dashboard from './components/Dashboard';
 import FormView from './components/FormView';
@@ -25,12 +25,61 @@ function App() {
     setAiCalculateDefects(null);
   }, []);
 
+  const chatRegistryRef = useRef<{
+    executeWorkflowCommand?: (command: string, data?: any) => Promise<string>;
+    getActiveProjectDetails?: () => { projectId?: string; sessionId?: string };
+  }>({});
+
   const chatActions: ChatEngineActions = useMemo(() => ({
     navigateToForm,
     navigateToDashboard,
     setAiFormFillData,
     setAiCalculateDefects,
-  }), [navigateToForm, navigateToDashboard]);
+    getCurrentView: () => currentView,
+    getActiveProjectDetails: () => {
+      if (currentView === 'form' && chatRegistryRef.current.getActiveProjectDetails) {
+        return chatRegistryRef.current.getActiveProjectDetails();
+      }
+      return {};
+    },
+    executeWorkflowCommand: async (command: string, data?: any) => {
+      if (currentView === 'form' && chatRegistryRef.current.executeWorkflowCommand) {
+        return chatRegistryRef.current.executeWorkflowCommand(command, data);
+      }
+      
+      const isWorkspaceLoadingCmd = (
+        command === 'search_styles' ||
+        command === 'search_and_download_project' ||
+        command === 'download_project' ||
+        command === 'open_project'
+      );
+
+      if (isWorkspaceLoadingCmd && currentView !== 'form') {
+        navigateToForm('pack_v0');
+      }
+
+      if (currentView === 'form' || isWorkspaceLoadingCmd) {
+        // Wait for workspace to mount/register the executor (up to 3 seconds)
+        return new Promise<string>((resolve) => {
+          let attempts = 0;
+          const checkInterval = setInterval(() => {
+            attempts++;
+            if (chatRegistryRef.current.executeWorkflowCommand) {
+              clearInterval(checkInterval);
+              chatRegistryRef.current.executeWorkflowCommand(command, data)
+                .then(resolve)
+                .catch(err => resolve(`Failed to execute: ${err.message || err}`));
+            } else if (attempts >= 30) {
+              clearInterval(checkInterval);
+              resolve("Timed out waiting for the Packaging QC workspace to initialize.");
+            }
+          }, 100);
+        });
+      }
+
+      return "Workflow executor is offline. Please open an inspection project first.";
+    }
+  }), [navigateToForm, navigateToDashboard, currentView]);
 
   const chat = useChatEngine(chatActions);
 
@@ -103,6 +152,7 @@ function App() {
               chatEndRef={chat.chatEndRef}
               onMinimize={handleMinimize}
               onClose={handleClose}
+              chatRegistryRef={chatRegistryRef}
             />
           )}
         </section>

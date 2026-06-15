@@ -33,3 +33,14 @@ async function synchronize() {
 ## UI State Management
 - **Sync Listener:** Components subscribe to network/sync updates via `SyncEngine.registerListener()`.
 - **Flexible Chained Sizing:** The viewport height is constrained to `100vh` via continuous flexbox chaining (`min-height: 0; flex: 1;`), preventing parent container overflows and window scrollbars.
+
+## Calculation & Yield Rules
+The Quality Control System enforces specific formalized equations for yield and reject tracking:
+
+1. **Reject Produksi (Production Rejects)**:
+   This represents the sum of all production-related reject categories:
+   $$\text{reject\_produksi} = \text{reject\_cutting} + \text{reject\_sewing} + \text{reject\_finishing} + \text{reject\_printing} + \text{reject\_embro} + \text{reject\_washing}$$
+
+2. **Total Reject Quantity (`total_reject_qty` / `reject_qty`)**:
+   This is the total sum of all defect types and lost garments:
+   $$\text{reject\_qty} = \text{reject\_produksi} + \text{reject\_bahan} + \text{btj} + \text{barang\_hilang}$$

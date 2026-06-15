@@ -32,9 +32,9 @@ No test runner or linter is configured. TypeScript strict mode (`noUnusedLocals`
    - `SyncEngine`: monitors `window.online`/`offline` events, sequentially syncs `pending_sync` reports. Uses listener pattern for UI updates.
    - `AIAgentService`: offline intent matcher for the Kaizen assistant. Parses text commands into actions (`navigate`, `fill`, `calculate`). Supports English + Indonesian keywords.
 
-4. **Tauri Backend** (`src-tauri/`) — Minimal Rust shell. Handles window management and plugin setup. Frontend communicates via `@tauri-apps/api` (currently limited to window controls).
+4. **Tauri Backend** (`src-tauri/`) — Rust backend shell connecting to PostgreSQL databases (VSM reference DB, QMS workspace DB, and RPA DB). Exposes Tauri commands for local SQLite and AWS PostgreSQL storage, Dynamics 365 OData synchronization, custom garment checklist placeholders, Universal RPA queue scheduling (invoice, deduction, and version-by-version chronological breakdowns), and `chat_logs` interaction logging.
 
-**Data flow:** Form submit → `DatabaseService.saveReport()` (draft) → `finalize()` (pending_sync) → `SyncEngine.synchronize()` (synced when online, queued when offline).
+**Data flow:** Form submit → `DatabaseService.saveReport()` (draft) → `finalize()` (pending_sync) → `SyncEngine.synchronize()` (synced when online, queued when offline). Dynamics 365 Baselines are downloaded from ERP OData directly into QMS. Completed projects schedule RPA jobs in the `rpa_queue` table.
 
 ## Key Patterns
 

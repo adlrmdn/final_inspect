@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface WorkspaceControlsProps {
   activePackagingProject: any;
@@ -8,12 +8,15 @@ interface WorkspaceControlsProps {
   getCycleName: (cycleNum: number) => string;
   handleMoveVersion: () => void;
   handleCompleteProject: () => void;
+  handleRevertProject: () => void;
   handleRemovePackagingProject: (projectId: string) => void;
   setActiveSession: (session: any) => void;
   setSelectedSizeTab: (size: string) => void;
   setSessionEditMode: (mode: boolean) => void;
   headerButtonStyle: React.CSSProperties;
   versionSelectorButtonStyle: (isSelected: boolean) => React.CSSProperties;
+  handlePrintReport: () => void;
+  handleUploadVerificationDoc: (projectId: string, docBase64: string) => Promise<void>;
 }
 
 export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
@@ -24,18 +27,22 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   getCycleName,
   handleMoveVersion,
   handleCompleteProject,
+  handleRevertProject,
   handleRemovePackagingProject,
   setActiveSession,
   setSelectedSizeTab,
   setSessionEditMode,
   headerButtonStyle,
   versionSelectorButtonStyle,
+  handlePrintReport,
+  handleUploadVerificationDoc,
 }) => {
+  const [showPreview, setShowPreview] = useState(false);
   return (
     <div
       className="flex-between"
       style={{
-        borderBottom: '1.5px solid rgba(37, 99, 235, 0.12)',
+        borderBottom: '2px solid rgba(15, 23, 42, 0.16)',
         paddingBottom: '0.75rem',
         marginBottom: '0.75rem',
         width: '100%',
@@ -99,7 +106,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                       style={{
                         ...headerButtonStyle,
                         background: 'rgba(16, 185, 129, 0.08)',
-                        border: '1.5px solid rgba(16, 185, 129, 0.3)',
+                        border: '2px solid rgba(16, 185, 129, 0.4)',
                         color: '#10B981',
                         gap: '0.25rem',
                       }}
@@ -114,7 +121,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                     style={{
                       ...headerButtonStyle,
                       background: 'rgba(16, 185, 129, 0.08)',
-                      border: '1.5px solid rgba(16, 185, 129, 0.3)',
+                      border: '2px solid rgba(16, 185, 129, 0.4)',
                       color: '#10B981',
                       gap: '0.25rem',
                     }}
@@ -159,6 +166,123 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
           </div>
         ) : (
           <>
+            {/* 1. Report */}
+            {activeSession && (
+              <button
+                className="btn-electric-outline"
+                onClick={handlePrintReport}
+                style={{
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  width: 'auto',
+                  padding: '0 0.85rem',
+                  fontSize: '0.72rem',
+                  color: 'var(--royal-blue)',
+                  borderColor: 'rgba(37, 99, 235, 0.28)',
+                  background: 'rgba(37, 99, 235, 0.05)',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: '1',
+                  gap: '0.25rem',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 6 2 18 2 18 9" />
+                  <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                  <rect x="6" y="14" width="12" height="8" />
+                </svg>
+                Report
+              </button>
+            )}
+
+            {/* 2. Verify */}
+            <input
+              type="file"
+              id="verify-doc-upload"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (event) => {
+                    if (event.target?.result) {
+                      handleUploadVerificationDoc(activePackagingProject.project_id, event.target.result as string);
+                    }
+                  };
+                  reader.readAsDataURL(file);
+                }
+              }}
+            />
+            {activePackagingProject.verified_doc ? (
+              <button
+                type="button"
+                className="btn-electric-outline"
+                onClick={() => setShowPreview(true)}
+                style={{
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  width: 'auto',
+                  padding: '0 0.85rem',
+                  fontSize: '0.72rem',
+                  color: '#10B981',
+                  borderColor: 'rgba(16, 185, 129, 0.28)',
+                  background: 'rgba(16, 185, 129, 0.05)',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: '1',
+                  gap: '0.25rem',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                  <polyline points="22 4 12 14.01 9 11.01" />
+                </svg>
+                ✓ Verified
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-electric-outline"
+                onClick={() => document.getElementById('verify-doc-upload')?.click()}
+                style={{
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  width: 'auto',
+                  padding: '0 0.85rem',
+                  fontSize: '0.72rem',
+                  color: 'var(--royal-blue)',
+                  borderColor: 'rgba(37, 99, 235, 0.28)',
+                  background: 'rgba(37, 99, 235, 0.05)',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: '1',
+                  gap: '0.25rem',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="12" y1="18" x2="12" y2="12" />
+                  <line x1="9" y1="15" x2="15" y2="15" />
+                </svg>
+                Verify
+              </button>
+            )}
+
+            {/* 3. Complete */}
             {activePackagingProject.status !== 'completed' ? (
               <button
                 className="btn-electric-outline"
@@ -181,26 +305,53 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                   lineHeight: '1',
                 }}
               >
-                Complete Workspace
+                Complete & Sync
               </button>
             ) : (
-              <span
-                className="electric-badge emerald"
-                style={{
-                  fontSize: '0.72rem',
-                  height: '32px',
-                  boxSizing: 'border-box',
-                  padding: '0 0.85rem',
-                  borderRadius: '10px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  lineHeight: 'normal',
-                }}
-              >
-                ✓ Completed
-              </span>
+              <>
+                <span
+                  className="electric-badge emerald"
+                  style={{
+                    fontSize: '0.72rem',
+                    height: '32px',
+                    boxSizing: 'border-box',
+                    padding: '0 0.85rem',
+                    borderRadius: '10px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    lineHeight: 'normal',
+                  }}
+                >
+                  ✓ Completed & Synced
+                </span>
+                <button
+                  className="btn-electric-outline"
+                  onClick={handleRevertProject}
+                  style={{
+                    height: '32px',
+                    boxSizing: 'border-box',
+                    width: 'auto',
+                    padding: '0 0.85rem',
+                    fontSize: '0.72rem',
+                    color: 'var(--amber-warm)',
+                    borderColor: 'rgba(245, 158, 11, 0.28)',
+                    background: 'rgba(245, 158, 11, 0.05)',
+                    fontWeight: 800,
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    lineHeight: '1',
+                  }}
+                >
+                  Revert
+                </button>
+              </>
             )}
+
+            {/* 4. Remove */}
             <button
               className="btn-electric-outline"
               onClick={() => handleRemovePackagingProject(activePackagingProject.project_id)}
@@ -221,11 +372,123 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                 lineHeight: '1',
               }}
             >
-              Remove Workspace
+              Remove
             </button>
           </>
         )}
       </div>
+
+      {/* Verification Doc Preview Modal */}
+      {showPreview && activePackagingProject.verified_doc && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.6)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 9999,
+            padding: '2rem',
+          }} 
+          onClick={() => setShowPreview(false)}
+        >
+          <div 
+            style={{
+              position: 'relative',
+              backgroundColor: '#ffffff',
+              borderRadius: '16px',
+              padding: '1.5rem',
+              width: '500px',
+              maxWidth: '90%',
+              maxHeight: '90%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+            }} 
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(15, 23, 42, 0.08)', paddingBottom: '0.75rem' }}>
+              <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 800, color: '#0F172A', fontFamily: "'Outfit', sans-serif" }}>Verification Document</h3>
+              <button 
+                type="button" 
+                onClick={() => setShowPreview(false)}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  fontSize: '1.25rem',
+                  fontWeight: 'bold',
+                  color: '#64748B',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ overflow: 'auto', display: 'flex', justifyContent: 'center', background: '#F8FAFC', borderRadius: '8px', padding: '0.5rem' }}>
+              <img 
+                src={activePackagingProject.verified_doc} 
+                alt="Verification Doc" 
+                style={{ maxWidth: '100%', maxHeight: '50vh', objectFit: 'contain', borderRadius: '6px' }} 
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', borderTop: '1px solid rgba(15, 23, 42, 0.08)', paddingTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn-electric-outline"
+                onClick={() => {
+                  setShowPreview(false);
+                  document.getElementById('verify-doc-upload')?.click();
+                }}
+                style={{
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  width: 'auto',
+                  padding: '0 0.85rem',
+                  fontSize: '0.72rem',
+                  color: 'var(--royal-blue)',
+                  borderColor: 'rgba(37, 99, 235, 0.28)',
+                  background: 'rgba(37, 99, 235, 0.05)',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: '1',
+                }}
+              >
+                Re-upload Doc
+              </button>
+              <button
+                type="button"
+                className="btn-electric"
+                onClick={() => setShowPreview(false)}
+                style={{
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  width: 'auto',
+                  padding: '0 1rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  background: 'var(--royal-blue)',
+                  color: '#ffffff',
+                  border: 'none',
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

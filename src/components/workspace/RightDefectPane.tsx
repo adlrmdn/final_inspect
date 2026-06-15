@@ -4,7 +4,6 @@ interface RightDefectPaneProps {
   activeSession: any;
   sessionEditMode: boolean;
   activePackagingProject: any;
-  getCycleNameFromSessionId: (sessionId: string, sessions: any[]) => string;
   handleMoveVersion: () => void;
   defectImagePathInput: string;
   setDefectImagePathInput: (val: string) => void;
@@ -21,13 +20,13 @@ interface RightDefectPaneProps {
   handleAddTempDefectImage: () => void;
   tempDefectImages: any[];
   setTempDefectImages: React.Dispatch<React.SetStateAction<any[]>>;
+  handleUpdateSavedDefect?: (imageId: string, field: 'major' | 'minor', value: number) => Promise<void>;
 }
 
 export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
   activeSession,
   sessionEditMode,
   activePackagingProject,
-  getCycleNameFromSessionId,
   handleMoveVersion,
   defectImagePathInput,
   setDefectImagePathInput,
@@ -44,115 +43,222 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
   handleAddTempDefectImage,
   tempDefectImages,
   setTempDefectImages,
+  handleUpdateSavedDefect,
 }) => {
   const images = activePackagingProject.defect_images || [];
   const projectImages = images.filter((img: any) => img.project_id === activePackagingProject.project_id);
 
   const renderSavedProjectDefectImages = () => {
     return projectImages.length > 0 ? (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {projectImages.map((img: any, idx: number) => {
-          const cycleTag = getCycleNameFromSessionId(img.session_id || '', activePackagingProject.sessions || []);
           return (
             <div
               key={idx}
               style={{
                 display: 'flex',
-                alignItems: 'center',
-                gap: '0.55rem',
+                flexDirection: 'column',
+                gap: '0.75rem',
                 background: '#F8FAFC',
-                padding: '0.45rem 0.65rem',
-                borderRadius: '8px',
-                border: '1px solid rgba(37,99,235,0.05)',
+                padding: '0.85rem',
+                borderRadius: '12px',
+                border: '2px solid rgba(15, 23, 42, 0.16)',
+                boxShadow: '0 2px 8px rgba(15, 23, 42, 0.02)',
               }}
             >
-              {img.image_path && (img.image_path.startsWith('data:image/') || img.image_path.startsWith('http') || img.image_path.length > 100) ? (
-                <div
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: '4px',
-                    overflow: 'hidden',
-                    flexShrink: 0,
-                    background: '#E2E8F0',
-                    border: '1px solid rgba(0,0,0,0.05)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <img src={img.image_path} alt="Defect" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                </div>
-              ) : (
-                <div
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: '4px',
-                    background: 'rgba(37, 99, 235, 0.05)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '0.75rem',
-                    flexShrink: 0,
-                  }}
-                >
-                  📷
-                </div>
-              )}
-              <div style={{ textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                  <span style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--royal-blue)' }}>[{img.defect_type}]</span>
-                  <span
-                    className="electric-badge silver"
-                    style={{
-                      fontSize: '0.5rem',
-                      height: '14px',
-                      padding: '0 0.35rem',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      lineHeight: 'normal',
-                      transform: 'scale(0.9)',
-                      transformOrigin: 'left center'
-                    }}
-                  >
-                    {cycleTag}
-                  </span>
-                </div>
-                <span style={{ fontSize: '0.65rem', color: 'var(--deep-ocean)', display: 'block', marginTop: '0.1rem' }}>
-                  {img.description || 'No description'}
+              {/* Header: Defect Type Badge */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="electric-badge" style={{ fontSize: '0.65rem', padding: '0.2rem 0.55rem', background: 'rgba(37, 99, 235, 0.08)' }}>
+                  {img.defect_type}
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
-                <span
-                  className="electric-badge red"
-                  style={{
-                    fontSize: '0.45rem',
-                    height: '14px',
-                    padding: '0 0.3rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: 'normal',
-                  }}
-                >
-                  Maj: {img.major}
-                </span>
-                <span
-                  className="electric-badge gold"
-                  style={{
-                    fontSize: '0.45rem',
-                    height: '14px',
-                    padding: '0 0.3rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: 'normal',
-                  }}
-                >
-                  Min: {img.minor}
-                </span>
+
+              {/* Main Content Area: Image (Left) + Description (Right) */}
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                {img.image_path && (img.image_path.startsWith('data:image/') || img.image_path.startsWith('http') || img.image_path.length > 50) ? (
+                  <div
+                    style={{
+                      width: '80px',
+                      height: '80px',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      flexShrink: 0,
+                      background: '#E2E8F0',
+                      border: '1.5px solid rgba(15, 23, 42, 0.12)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                    }}
+                  >
+                    <img src={img.image_path} alt="Defect" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      width: '80px',
+                      height: '80px',
+                      borderRadius: '8px',
+                      background: 'rgba(15, 23, 42, 0.05)',
+                      border: '1.5px dashed rgba(15, 23, 42, 0.15)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      color: 'var(--text-muted)',
+                      gap: '0.25rem'
+                    }}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    <span style={{ fontSize: '0.5rem', fontWeight: 700 }}>NO IMAGE</span>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--deep-ocean)', wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: 1.35 }}>
+                    {img.description || 'No description provided'}
+                  </div>
+                  <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
+                    Logged: {img.captured_at ? new Date(img.captured_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Steppers: Major / Minor Adjustments */}
+              <div style={{ display: 'flex', gap: '0.65rem', borderTop: '1px solid rgba(15, 23, 42, 0.08)', paddingTop: '0.65rem', flexWrap: 'wrap' }}>
+                {sessionEditMode ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flex: 1 }}>
+                      <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)' }}>MAJ</span>
+                      <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '4px', padding: '1px', flex: 1, justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const val = Math.max(0, img.major - 1);
+                            handleUpdateSavedDefect?.(img.image_id, 'major', val);
+                          }}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min="0"
+                          value={img.major === 0 ? '' : img.major ?? ''}
+                          placeholder="0"
+                          onFocus={(e) => e.target.select()}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          onChange={(e) => {
+                            const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                            e.target.value = cleanVal;
+                            const val = cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0;
+                            handleUpdateSavedDefect?.(img.image_id, 'major', val);
+                          }}
+                          style={{
+                            width: '24px',
+                            border: 'none',
+                            outline: 'none',
+                            background: 'transparent',
+                            textAlign: 'center',
+                            fontSize: '0.65rem',
+                            fontWeight: 800,
+                            padding: 0,
+                            margin: 0,
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const val = img.major + 1;
+                            handleUpdateSavedDefect?.(img.image_id, 'major', val);
+                          }}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flex: 1 }}>
+                      <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)' }}>MIN</span>
+                      <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '4px', padding: '1px', flex: 1, justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const val = Math.max(0, img.minor - 1);
+                            handleUpdateSavedDefect?.(img.image_id, 'minor', val);
+                          }}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min="0"
+                          value={img.minor === 0 ? '' : img.minor ?? ''}
+                          placeholder="0"
+                          onFocus={(e) => e.target.select()}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          onChange={(e) => {
+                            const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                            e.target.value = cleanVal;
+                            const val = cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0;
+                            handleUpdateSavedDefect?.(img.image_id, 'minor', val);
+                          }}
+                          style={{
+                            width: '24px',
+                            border: 'none',
+                            outline: 'none',
+                            background: 'transparent',
+                            textAlign: 'center',
+                            fontSize: '0.65rem',
+                            fontWeight: 800,
+                            padding: 0,
+                            margin: 0,
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const val = img.minor + 1;
+                            handleUpdateSavedDefect?.(img.image_id, 'minor', val);
+                          }}
+                          style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="electric-badge red"
+                      style={{
+                        fontSize: '0.55rem',
+                        padding: '0.25rem 0.65rem',
+                        borderRadius: '6px',
+                        flex: 1,
+                      }}
+                    >
+                      Major: {img.major}
+                    </span>
+                    <span
+                      className="electric-badge gold"
+                      style={{
+                        fontSize: '0.55rem',
+                        padding: '0.25rem 0.65rem',
+                        borderRadius: '6px',
+                        flex: 1,
+                      }}
+                    >
+                      Minor: {img.minor}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           );
@@ -162,7 +268,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
       <div
         style={{
           padding: '1.5rem',
-          border: '1.5px dashed rgba(37,99,235,0.08)',
+          border: '2px dashed rgba(15, 23, 42, 0.16)',
           borderRadius: '12px',
           textAlign: 'center',
           fontSize: '0.72rem',
@@ -181,9 +287,8 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
           className="bento-card"
           style={{
             padding: '1.25rem',
-            background: 'rgba(255, 255, 255, 0.98)',
-            backdropFilter: 'blur(20px)',
-            border: '1.5px solid rgba(37, 99, 235, 0.12)',
+            background: '#ffffff',
+            border: '2px solid rgba(15, 23, 42, 0.16)',
             borderRadius: '16px',
             boxShadow: '0 4px 20px rgba(15, 23, 42, 0.02)',
             display: 'flex',
@@ -204,20 +309,6 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
             }}
           >
             <h4 style={{ fontSize: '0.76rem', fontWeight: 900, color: 'var(--royal-blue)', textTransform: 'uppercase', margin: 0 }}>Defect Photos</h4>
-            <span
-              className="electric-badge silver"
-              style={{
-                fontSize: '0.55rem',
-                height: '18px',
-                padding: '0 0.5rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                lineHeight: 'normal',
-              }}
-            >
-              Cycle {activeSession.cycle_number}
-            </span>
           </div>
 
           {sessionEditMode ? (
@@ -258,14 +349,18 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                       fontSize: '0.72rem',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      border: '1.5px dashed rgba(37,99,235,0.25)',
-                      background: 'rgba(37,99,235,0.02)',
-                      color: 'var(--royal-blue)',
+                      border: '2px dashed rgba(15, 23, 42, 0.25)',
+                      background: 'rgba(15, 23, 42, 0.02)',
+                      color: 'var(--deep-ocean)',
                       fontWeight: 700,
                       textAlign: 'center',
                     }}
                   >
-                    📷 Choose Image File
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '0.25rem' }}>
+                      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Choose Image File
                   </label>
                   {defectImagePathInput && (
                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
@@ -329,7 +424,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                     width: '100%',
                     padding: '0.35rem 0.45rem',
                     fontSize: '0.72rem',
-                    border: '1.5px solid rgba(37,99,235,0.12)',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
                     borderRadius: '6px',
                     outline: 'none',
                     background: 'white',
@@ -356,7 +451,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                     height: '40px',
                     padding: '0.35rem 0.45rem',
                     fontSize: '0.72rem',
-                    border: '1.5px solid rgba(37,99,235,0.12)',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
                     borderRadius: '6px',
                     outline: 'none',
                     resize: 'none',
@@ -370,19 +465,43 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                   <label style={{ fontSize: '0.55rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
                     MAJOR DEFECTS
                   </label>
-                  <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '1px solid rgba(37,99,235,0.12)', borderRadius: '6px', padding: '0.15rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '6px', padding: '1px' }}>
                     <button
                       type="button"
                       onClick={() => setDefectMajorInput((prev) => Math.max(0, prev - 1))}
-                      style={{ padding: '0.05rem 0.25rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800 }}
+                      style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}
                     >
                       -
                     </button>
-                    <span style={{ flex: 1, textAlign: 'center', fontSize: '0.7rem', fontWeight: 800 }}>{defectMajorInput}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={defectMajorInput === 0 ? '' : defectMajorInput ?? ''}
+                      placeholder="0"
+                      onFocus={(e) => e.target.select()}
+                      onWheel={(e) => e.currentTarget.blur()}
+                      onChange={(e) => {
+                        const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                        e.target.value = cleanVal;
+                        setDefectMajorInput(cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
+                      }}
+                      style={{
+                        flex: 1,
+                        border: 'none',
+                        outline: 'none',
+                        background: 'transparent',
+                        textAlign: 'center',
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: 0,
+                        margin: 0,
+                        width: '100%',
+                      }}
+                    />
                     <button
                       type="button"
                       onClick={() => setDefectMajorInput((prev) => prev + 1)}
-                      style={{ padding: '0.05rem 0.25rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800 }}
+                      style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}
                     >
                       +
                     </button>
@@ -392,19 +511,43 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                   <label style={{ fontSize: '0.55rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
                     MINOR DEFECTS
                   </label>
-                  <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '1px solid rgba(37,99,235,0.12)', borderRadius: '6px', padding: '0.15rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '6px', padding: '1px' }}>
                     <button
                       type="button"
                       onClick={() => setDefectMinorInput((prev) => Math.max(0, prev - 1))}
-                      style={{ padding: '0.05rem 0.25rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800 }}
+                      style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}
                     >
                       -
                     </button>
-                    <span style={{ flex: 1, textAlign: 'center', fontSize: '0.7rem', fontWeight: 800 }}>{defectMinorInput}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={defectMinorInput === 0 ? '' : defectMinorInput ?? ''}
+                      placeholder="0"
+                      onFocus={(e) => e.target.select()}
+                      onWheel={(e) => e.currentTarget.blur()}
+                      onChange={(e) => {
+                        const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                        e.target.value = cleanVal;
+                        setDefectMinorInput(cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
+                      }}
+                      style={{
+                        flex: 1,
+                        border: 'none',
+                        outline: 'none',
+                        background: 'transparent',
+                        textAlign: 'center',
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: 0,
+                        margin: 0,
+                        width: '100%',
+                      }}
+                    />
                     <button
                       type="button"
                       onClick={() => setDefectMinorInput((prev) => prev + 1)}
-                      style={{ padding: '0.05rem 0.25rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800 }}
+                      style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}
                     >
                       +
                     </button>
@@ -421,7 +564,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
               </button>
 
               {tempDefectImages.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginTop: '0.55rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem', marginTop: '0.55rem' }}>
                   <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
                     Draft Attachments ({tempDefectImages.length})
                   </span>
@@ -430,65 +573,19 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                       key={idx}
                       style={{
                         display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.55rem',
+                        flexDirection: 'column',
+                        gap: '0.75rem',
                         background: '#F1F5F9',
-                        padding: '0.45rem',
-                        borderRadius: '8px',
-                        border: '1px solid rgba(37,99,235,0.05)',
+                        padding: '0.85rem',
+                        borderRadius: '12px',
+                        border: '2px solid rgba(15, 23, 42, 0.16)',
+                        boxShadow: '0 2px 8px rgba(15, 23, 42, 0.02)',
                       }}
                     >
-                      {img.image_path &&
-                        (img.image_path.startsWith('data:image/') || img.image_path.startsWith('http') || img.image_path.length > 100) && (
-                          <div
-                            style={{
-                              width: '36px',
-                              height: '36px',
-                              borderRadius: '4px',
-                              overflow: 'hidden',
-                              flexShrink: 0,
-                              background: '#E2E8F0',
-                              border: '1px solid rgba(0,0,0,0.05)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                            }}
-                          >
-                            <img src={img.image_path} alt="Defect" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          </div>
-                        )}
-                      <div style={{ textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                        <span style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--royal-blue)', display: 'block' }}>[{img.defect_type}]</span>
-                        <span style={{ fontSize: '0.65rem', color: 'var(--deep-ocean)' }}>{img.description || 'No description'}</span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
-                        <span
-                          className="electric-badge red"
-                          style={{
-                            fontSize: '0.45rem',
-                            height: '14px',
-                            padding: '0 0.3rem',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            lineHeight: 'normal',
-                          }}
-                        >
-                          Maj: {img.major}
-                        </span>
-                        <span
-                          className="electric-badge gold"
-                          style={{
-                            fontSize: '0.45rem',
-                            height: '14px',
-                            padding: '0 0.3rem',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            lineHeight: 'normal',
-                          }}
-                        >
-                          Min: {img.minor}
+                      {/* Header: Defect Type Badge & Delete button */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span className="electric-badge" style={{ fontSize: '0.65rem', padding: '0.2rem 0.55rem', background: 'rgba(37, 99, 235, 0.08)' }}>
+                          {img.defect_type} (Draft)
                         </span>
                         <button
                           type="button"
@@ -499,13 +596,198 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                             color: '#EF4444',
                             fontWeight: 900,
                             cursor: 'pointer',
-                            fontSize: '0.8rem',
+                            fontSize: '1.1rem',
                             padding: '0 0.15rem',
-                            marginLeft: '0.2rem',
+                            lineHeight: 1,
                           }}
+                          title="Remove Draft Attachment"
                         >
                           &times;
                         </button>
+                      </div>
+
+                      {/* Main Content Area: Image + Description */}
+                      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                        {img.image_path && (img.image_path.startsWith('data:image/') || img.image_path.startsWith('http') || img.image_path.length > 50) ? (
+                          <div
+                            style={{
+                              width: '80px',
+                              height: '80px',
+                              borderRadius: '8px',
+                              overflow: 'hidden',
+                              flexShrink: 0,
+                              background: '#E2E8F0',
+                              border: '1.5px solid rgba(15, 23, 42, 0.12)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                            }}
+                          >
+                            <img src={img.image_path} alt="Defect" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              width: '80px',
+                              height: '80px',
+                              borderRadius: '8px',
+                              background: 'rgba(15, 23, 42, 0.05)',
+                              border: '1.5px dashed rgba(15, 23, 42, 0.15)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                              color: 'var(--text-muted)',
+                              gap: '0.25rem'
+                            }}
+                          >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                              <circle cx="12" cy="13" r="4" />
+                            </svg>
+                            <span style={{ fontSize: '0.5rem', fontWeight: 700 }}>NO IMAGE</span>
+                          </div>
+                        )}
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--deep-ocean)', wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: 1.35 }}>
+                            {img.description || 'No description provided'}
+                          </div>
+                          <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
+                            Draft Captured
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Steppers: Major / Minor Adjustments */}
+                      <div style={{ display: 'flex', gap: '0.65rem', borderTop: '1px solid rgba(15, 23, 42, 0.08)', paddingTop: '0.65rem', flexWrap: 'wrap' }}>
+                        {sessionEditMode ? (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flex: 1 }}>
+                              <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)' }}>MAJ</span>
+                              <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '4px', padding: '1px', flex: 1, justifyContent: 'space-between' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const val = Math.max(0, img.major - 1);
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, major: val } : item));
+                                  }}
+                                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={img.major === 0 ? '' : img.major ?? ''}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
+                                  onWheel={(e) => e.currentTarget.blur()}
+                                  onChange={(e) => {
+                                    const val = e.target.value === '' ? 0 : parseInt(e.target.value) || 0;
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, major: val } : item));
+                                  }}
+                                  style={{
+                                    width: '24px',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    textAlign: 'center',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 800,
+                                    padding: 0,
+                                    margin: 0,
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const val = img.major + 1;
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, major: val } : item));
+                                  }}
+                                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flex: 1 }}>
+                              <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)' }}>MIN</span>
+                              <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '4px', padding: '1px', flex: 1, justifyContent: 'space-between' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const val = Math.max(0, img.minor - 1);
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, minor: val } : item));
+                                  }}
+                                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={img.minor === 0 ? '' : img.minor ?? ''}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
+                                  onWheel={(e) => e.currentTarget.blur()}
+                                  onChange={(e) => {
+                                    const val = e.target.value === '' ? 0 : parseInt(e.target.value) || 0;
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, minor: val } : item));
+                                  }}
+                                  style={{
+                                    width: '24px',
+                                    border: 'none',
+                                    outline: 'none',
+                                    background: 'transparent',
+                                    textAlign: 'center',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 800,
+                                    padding: 0,
+                                    margin: 0,
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const val = img.minor + 1;
+                                    setTempDefectImages(prev => prev.map((item, i) => i === idx ? { ...item, minor: val } : item));
+                                  }}
+                                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.85rem', padding: '0 0.35rem' }}
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className="electric-badge red"
+                              style={{
+                                fontSize: '0.55rem',
+                                padding: '0.25rem 0.65rem',
+                                borderRadius: '6px',
+                                flex: 1,
+                              }}
+                            >
+                              Major: {img.major}
+                            </span>
+                            <span
+                              className="electric-badge gold"
+                              style={{
+                                fontSize: '0.55rem',
+                                padding: '0.25rem 0.65rem',
+                                borderRadius: '6px',
+                                flex: 1,
+                              }}
+                            >
+                              Minor: {img.minor}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -545,15 +827,18 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
               width: '42px',
               height: '42px',
               borderRadius: '50%',
-              background: 'rgba(37, 99, 235, 0.05)',
+              background: 'rgba(15, 23, 42, 0.05)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: 'var(--royal-blue)',
+              color: 'var(--deep-ocean)',
               marginBottom: '0.85rem',
             }}
           >
-            ⚙
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
           </div>
           <span style={{ fontWeight: 800, color: 'var(--deep-ocean)', fontSize: '0.88rem' }}>No Active QC Inspection Version</span>
           <p style={{ fontSize: '0.72rem', maxWidth: '300px', margin: '0.25rem 0 1rem 0', lineHeight: 1.4, textAlign: 'center' }}>

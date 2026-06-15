@@ -11,6 +11,7 @@ interface FormHeaderProps {
   setActiveSession: (session: any) => void;
   onMinimize: () => void;
   onClose: () => void;
+  onShowGuidelines?: () => void;
 }
 
 export const FormHeader: React.FC<FormHeaderProps> = ({
@@ -24,12 +25,13 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
   setActiveSession,
   onMinimize,
   onClose,
+  onShowGuidelines,
 }) => {
   return (
     <div
       className="flex-between dashboard-header form-view-header"
       style={{
-        borderBottom: '1.5px solid rgba(37, 99, 235, 0.1)',
+        borderBottom: '2px solid rgba(15, 23, 42, 0.16)',
         paddingBottom: '0.85rem',
         marginBottom: '0.85rem',
         flexShrink: 0,
@@ -75,6 +77,46 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
           {activePackagingProject ? 'Close Workspace' : 'Return to Hub'}
         </button>
 
+        {onShowGuidelines && (
+          <button
+            type="button"
+            className="btn-electric-outline"
+            onClick={onShowGuidelines}
+            title={activePackagingProject ? "View Guidelines" : "Petunjuk Penggunaan"}
+            aria-label="View Guidelines"
+            style={{
+              width: '32px',
+              height: '32px',
+              padding: 0,
+              marginLeft: '6px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--royal-blue)',
+              borderColor: 'rgba(37, 99, 235, 0.35)',
+              background: 'rgba(37, 99, 235, 0.05)',
+              borderRadius: '50%',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+          </button>
+        )}
+
         <div style={{ flex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
           {activePackagingProject ? (
             <>
@@ -98,7 +140,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
                       fontWeight: 800,
                       background: 'rgba(37, 99, 235, 0.05)',
                       color: 'var(--royal-blue)',
-                      border: '1.5px solid rgba(37, 99, 235, 0.15)',
+                      border: '2px solid rgba(37, 99, 235, 0.25)',
                       borderRadius: '99px',
                     }}
                   >
@@ -124,7 +166,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
                           fontWeight: 800,
                           background: 'rgba(16, 185, 129, 0.05)',
                           color: '#10B981',
-                          border: '1.5px solid rgba(16, 185, 129, 0.25)',
+                          border: '2px solid rgba(16, 185, 129, 0.35)',
                           borderRadius: '99px',
                         }}
                       >
@@ -173,18 +215,6 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
                     <>
                       <span style={{ opacity: 0.5 }}>•</span>
                       <span>{activePackagingProject.production_group}</span>
-                    </>
-                  )}
-                  {activePackagingProject.cmt_cut_job_id && (
-                    <>
-                      <span style={{ opacity: 0.5 }}>•</span>
-                      <span>{activePackagingProject.cmt_cut_job_id}</span>
-                    </>
-                  )}
-                  {activePackagingProject.cmt_pak_job_id && (
-                    <>
-                      <span style={{ opacity: 0.5 }}>•</span>
-                      <span>{activePackagingProject.cmt_pak_job_id}</span>
                     </>
                   )}
                 </div>

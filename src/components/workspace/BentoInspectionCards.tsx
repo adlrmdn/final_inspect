@@ -19,11 +19,33 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
   setActiveSession,
   handleRefetchReportLines,
 }) => {
+  const [activeLineId, setActiveLineId] = React.useState<string | null>(null);
+
+  // Sync state when activeSession or report_lines load or change
+  React.useEffect(() => {
+    if (activeSession && activeSession.report_lines && activeSession.report_lines.length > 0) {
+      const isValid = activeSession.report_lines.some((l: any) => l.report_id === activeLineId);
+      if (!isValid) {
+        setActiveLineId(activeSession.report_lines[0].report_id);
+      }
+    }
+  }, [activeSession, activeLineId]);
+
+  // Sync state when parent size tab changes (e.g. from AI commands)
+  React.useEffect(() => {
+    if (selectedSizeTab && activeSession && activeSession.report_lines) {
+      const line = activeSession.report_lines.find((l: any) => l.size_val === selectedSizeTab);
+      if (line && line.report_id !== activeLineId) {
+        setActiveLineId(line.report_id);
+      }
+    }
+  }, [selectedSizeTab, activeSession]);
+
   const cardStyle: React.CSSProperties = {
+
     padding: '1.25rem',
-    background: 'rgba(255, 255, 255, 0.98)',
-    backdropFilter: 'blur(20px)',
-    border: '1.5px solid rgba(37, 99, 235, 0.12)',
+    background: '#ffffff',
+    border: '2px solid rgba(15, 23, 42, 0.16)',
     borderRadius: '16px',
     boxShadow: '0 4px 20px rgba(15, 23, 42, 0.02)',
     display: 'flex',
@@ -40,7 +62,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
         <div
           style={{
             padding: '1.25rem',
-            border: '1.5px dashed rgba(37,99,235,0.15)',
+            border: '2px dashed rgba(15, 23, 42, 0.16)',
             borderRadius: '12px',
             textAlign: 'center',
             display: 'flex',
@@ -54,14 +76,16 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               width: '32px',
               height: '32px',
               borderRadius: '50%',
-              background: 'rgba(37,99,235,0.06)',
+              background: 'rgba(15, 23, 42, 0.06)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: '1rem',
+              color: 'var(--deep-ocean)',
             }}
           >
-            📦
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+            </svg>
           </div>
           <div>
             <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--deep-ocean)', marginBottom: '0.25rem' }}>No Size Data Available</div>
@@ -80,11 +104,11 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               textAlign: 'left',
               fontSize: '0.62rem',
               color: 'var(--text-muted)',
-              border: '1px solid rgba(37,99,235,0.06)',
+              border: '2px solid rgba(15, 23, 42, 0.12)',
             }}
           >
             <div style={{ fontWeight: 800, fontSize: '0.65rem', color: 'var(--deep-ocean)', marginBottom: '0.35rem', textTransform: 'uppercase' }}>
-              🔍 Data Diagnostic
+              Data Diagnostic
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem 0.75rem' }}>
               <span style={{ fontWeight: 700 }}>PLM ID:</span>
@@ -129,10 +153,10 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
       );
     }
 
-    const sizes = activeSession.report_lines.map((line: any) => line.size_val).filter(Boolean);
-    const currentSize = selectedSizeTab || sizes[0];
-    const lineIndex = activeSession.report_lines.findIndex((l: any) => l.size_val === currentSize);
-    const activeLine = activeSession.report_lines[lineIndex];
+    const currentLineId = activeLineId || (activeSession.report_lines[0]?.report_id);
+    const lineIndex = activeSession.report_lines.findIndex((l: any) => l.report_id === currentLineId);
+    const activeLine = activeSession.report_lines[lineIndex] || activeSession.report_lines[0];
+    const currentSize = activeLine?.size_val || 'N/A';
 
     if (!activeLine) {
       return (
@@ -167,10 +191,37 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
     const bHilang = activeLine.barang_hilang || 0;
 
     const rejectProduksi = rCutting + rSewing + rFinishing + rPrinting + rEmbro + rWashing;
-    const totalReject = rBahan + rejectProduksi + btjVal + bHilang;
-    const totalGood = (activeLine.session_qty || 0) - totalReject;
+    
+    // Cumulative rejects calculation across versions
+    const otherSessionsRejectQty = (activePackagingProject?.sessions || [])
+      .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+      .reduce((sum: number, s: any) => {
+        const line = (s.report_lines || []).find((l: any) => l.size_val === currentSize);
+        if (!line) return sum;
+        const rc = line.reject_cutting || 0;
+        const rs = line.reject_sewing || 0;
+        const rf = line.reject_finishing || 0;
+        const rp = line.reject_printing || 0;
+        const re = line.reject_embro || 0;
+        const rw = line.reject_washing || 0;
+        const rb = line.reject_bahan || 0;
+        const bt = line.btj || 0;
+        const bh = line.barang_hilang || 0;
+        const rejProd = rc + rs + rf + rp + re + rw;
+        return sum + (rb + rejProd + bt + bh);
+      }, 0);
+    const totalReject = otherSessionsRejectQty + (rBahan + rejectProduksi + btjVal + bHilang);
+    
+    // Cumulative good qty calculation across versions
+    const otherSessionsGoodQty = (activePackagingProject?.sessions || [])
+      .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+      .reduce((sum: number, s: any) => {
+        const line = (s.report_lines || []).find((l: any) => l.size_val === currentSize);
+        return sum + (line?.session_qty || 0);
+      }, 0);
+    const totalGood = otherSessionsGoodQty + (activeLine.session_qty || 0);
 
-    const updateLineField = (field: string, val: number) => {
+    const updateLineField = (field: string, val: number | '') => {
       if (!isEdit) return;
       setActiveSession((prev: any) => {
         const nextLines = [...prev.report_lines];
@@ -188,8 +239,37 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
         const bh = updatedLine.barang_hilang || 0;
 
         const newRejectProduksi = rc + rs + rf + rp + re + rw;
-        const newTotalReject = rb + newRejectProduksi + bt + bh;
-        const newTotalGood = (updatedLine.session_qty || 0) - newTotalReject;
+        
+        // Cumulative reject calculation
+        const otherReject = (activePackagingProject?.sessions || [])
+          .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+          .reduce((sum: number, s: any) => {
+            const line = (s.report_lines || []).find((l: any) => l.size_val === currentSize);
+            if (!line) return sum;
+            const lrc = line.reject_cutting || 0;
+            const lrs = line.reject_sewing || 0;
+            const lrf = line.reject_finishing || 0;
+            const lrp = line.reject_printing || 0;
+            const lre = line.reject_embro || 0;
+            const lrw = line.reject_washing || 0;
+            const lrb = line.reject_bahan || 0;
+            const lbt = line.btj || 0;
+            const lbh = line.barang_hilang || 0;
+            const rejProd = lrc + lrs + lrf + lrp + lre + lrw;
+            return sum + (lrb + rejProd + lbt + lbh);
+          }, 0);
+        const currentReject = rb + newRejectProduksi + bt + bh;
+        const newTotalReject = otherReject + currentReject;
+        
+        // Cumulative good qty calculation
+        const otherGood = (activePackagingProject?.sessions || [])
+          .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+          .reduce((sum: number, s: any) => {
+            const line = (s.report_lines || []).find((l: any) => l.size_val === currentSize);
+            return sum + (line?.session_qty || 0);
+          }, 0);
+        const currentQty = updatedLine.session_qty || 0;
+        const newTotalGood = otherGood + currentQty;
 
         updatedLine.reject_produksi = newRejectProduksi;
         updatedLine.total_reject_qty = newTotalReject;
@@ -201,477 +281,606 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
     };
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', textAlign: 'left' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'left' }}>
         {/* Horizontal Size Tabs */}
-        <div style={{ display: 'flex', gap: '0.45rem', borderBottom: '1px solid rgba(37,99,235,0.08)', paddingBottom: '0.45rem', flexWrap: 'wrap' }}>
-          {sizes.map((s: string) => {
-            const isTabSelected = currentSize === s;
+        <div style={{ display: 'flex', gap: '0.45rem', borderBottom: '2px solid rgba(15, 23, 42, 0.12)', paddingBottom: '0.45rem', flexWrap: 'wrap' }}>
+          {activeSession.report_lines.map((line: any) => {
+            const size = line.size_val || 'N/A';
+            const duplicates = activeSession.report_lines.filter((l: any) => l.size_val === size);
+            let label = size;
+            if (duplicates.length > 1) {
+              const occurrenceIndex = duplicates.findIndex((l: any) => l.report_id === line.report_id) + 1;
+              label = `${size} (#${occurrenceIndex})`;
+            }
+            const isTabSelected = currentLineId === line.report_id;
             return (
               <button
-                key={s}
+                key={line.report_id}
                 type="button"
-                onClick={() => setSelectedSizeTab(s)}
+                onClick={() => {
+                  setActiveLineId(line.report_id);
+                  setSelectedSizeTab(size);
+                }}
                 style={{
                   padding: '0.35rem 0.75rem',
                   fontSize: '0.72rem',
                   fontWeight: isTabSelected ? 800 : 600,
                   borderRadius: '6px',
-                  border: isTabSelected ? 'none' : '1px solid rgba(37,99,235,0.12)',
+                  border: isTabSelected ? 'none' : '2px solid rgba(15, 23, 42, 0.16)',
                   background: isTabSelected ? 'rgba(37,99,235,0.12)' : 'transparent',
                   color: isTabSelected ? 'var(--royal-blue)' : 'var(--deep-ocean)',
                   cursor: 'pointer',
                 }}
               >
-                {s}
+                {label}
               </button>
             );
           })}
         </div>
 
-        {/* 3-Column Fields Grid */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr',
-            gap: '0.85rem',
-            background: '#F8FAFC',
-            padding: '1rem',
-            borderRadius: '12px',
-            border: '1px solid rgba(37,99,235,0.05)',
-          }}
-        >
-          {/* Row 1 */}
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>QTY ORDER</label>
-            <div
-              style={{
-                padding: '0.35rem 0.5rem',
-                fontSize: '0.74rem',
-                fontWeight: 700,
-                background: '#E2E8F0',
-                border: '1px solid rgba(0,0,0,0.05)',
-                borderRadius: '6px',
-                color: 'var(--deep-ocean)',
-              }}
-            >
-              {activeLine.qty_order || 0}
+        {/* Section 1: Summary Metrics */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+          <div style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--deep-ocean)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Summary Metrics
+            </span>
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr 1.2fr',
+              gap: '0.85rem',
+              background: '#F8FAFC',
+              padding: '1rem',
+              borderRadius: '12px',
+              border: '2px solid rgba(15, 23, 42, 0.16)',
+              boxShadow: '0 2px 8px rgba(15, 23, 42, 0.01)',
+            }}
+          >
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>QTY ORDER</label>
+              <div
+                style={{
+                  padding: '0.35rem 0.5rem',
+                  fontSize: '0.74rem',
+                  fontWeight: 700,
+                  background: '#E2E8F0',
+                  border: '1px solid rgba(0,0,0,0.05)',
+                  borderRadius: '6px',
+                  color: 'var(--deep-ocean)',
+                }}
+              >
+                {activeLine.qty_order || 0}
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                QTY CUTT (BASELINE)
+              </label>
+              <div
+                style={{
+                  padding: '0.35rem 0.5rem',
+                  fontSize: '0.74rem',
+                  fontWeight: 700,
+                  background: '#E2E8F0',
+                  border: '1px solid rgba(0,0,0,0.05)',
+                  borderRadius: '6px',
+                  color: 'var(--deep-ocean)',
+                }}
+              >
+                {qtyCutting}
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--royal-blue)', display: 'block', marginBottom: '0.15rem' }}>QTY VERSION</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.session_qty === 0 ? '' : activeLine.session_qty ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    const val = cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0;
+                    updateLineField('session_qty', val);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                    background: '#FFFFFF',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 800,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--royal-blue)',
+                  }}
+                >
+                  {activeLine.session_qty || 0}
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  TOTAL QTY GOOD
+                </label>
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 900,
+                    background: '#D1FAE5',
+                    border: '2px solid rgba(16, 185, 129, 0.3)',
+                    borderRadius: '6px',
+                    color: '#10B981',
+                  }}
+                >
+                  {totalGood}
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  TOTAL QTY REJECT
+                </label>
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 800,
+                    background: '#FEE2E2',
+                    border: '2px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '6px',
+                    color: '#EF4444',
+                  }}
+                >
+                  {totalReject}
+                </div>
+              </div>
             </div>
           </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              QTY CUTT (BASELINE)
-            </label>
-            <div
-              style={{
-                padding: '0.35rem 0.5rem',
-                fontSize: '0.74rem',
-                fontWeight: 700,
-                background: '#E2E8F0',
-                border: '1px solid rgba(0,0,0,0.05)',
-                borderRadius: '6px',
-                color: 'var(--deep-ocean)',
-              }}
-            >
-              {qtyCutting}
+        </div>
+
+        {/* Section 2: Material & Miscellaneous Losses */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', marginTop: '0.45rem' }}>
+          <div style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--deep-ocean)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Material & Miscellaneous Losses
+            </span>
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: '0.85rem',
+              background: '#F8FAFC',
+              padding: '1rem',
+              borderRadius: '12px',
+              border: '2px solid rgba(15, 23, 42, 0.16)',
+              boxShadow: '0 2px 8px rgba(15, 23, 42, 0.01)',
+            }}
+          >
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT BAHAN</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_bahan === 0 ? '' : activeLine.reject_bahan ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_bahan', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rBahan}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>BTJ</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.btj === 0 ? '' : activeLine.btj ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('btj', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {btjVal}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                BARANG HILANG
+              </label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.barang_hilang === 0 ? '' : activeLine.barang_hilang ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('barang_hilang', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {bHilang}
+                </div>
+              )}
             </div>
           </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--royal-blue)', display: 'block', marginBottom: '0.15rem' }}>VERSION QTY</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={activeLine.session_qty || 0}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0.0;
-                  setActiveSession((prev: any) => {
-                    const nextLines = [...prev.report_lines];
-                    const updatedLine = { ...nextLines[lineIndex], session_qty: val };
-                    const totRej = updatedLine.total_reject_qty || 0;
-                    updatedLine.total_good_qty = val - totRej;
-                    nextLines[lineIndex] = updatedLine;
-                    return { ...prev, report_lines: nextLines };
-                  });
-                }}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                  background: '#FFFFFF',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 800,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--royal-blue)',
-                }}
-              >
-                {activeLine.session_qty || 0}
-              </div>
-            )}
-          </div>
+        </div>
 
-          {/* Row 2 */}
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT BAHAN</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rBahan}
-                onChange={(e) => updateLineField('reject_bahan', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rBahan}
-              </div>
-            )}
+        {/* Section 3: Production Process Rejects */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', marginTop: '0.45rem' }}>
+          <div style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--deep-ocean)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Production Process Rejects
+            </span>
           </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              REJECT CUTTING
-            </label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rCutting}
-                onChange={(e) => updateLineField('reject_cutting', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rCutting}
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT SEWING</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rSewing}
-                onChange={(e) => updateLineField('reject_sewing', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rSewing}
-              </div>
-            )}
-          </div>
-
-          {/* Row 3 */}
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              REJECT FINISHING
-            </label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rFinishing}
-                onChange={(e) => updateLineField('reject_finishing', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rFinishing}
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT PRINTING</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rPrinting}
-                onChange={(e) => updateLineField('reject_printing', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rPrinting}
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT EMBRO</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rEmbro}
-                onChange={(e) => updateLineField('reject_embro', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rEmbro}
-              </div>
-            )}
-          </div>
-
-          {/* Row 4 */}
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT WASHING</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={rWashing}
-                onChange={(e) => updateLineField('reject_washing', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {rWashing}
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              REJECT PRODUKSI
-            </label>
-            <div
-              style={{
-                padding: '0.35rem 0.5rem',
-                fontSize: '0.74rem',
-                fontWeight: 800,
-                background: '#E2E8F0',
-                border: '1px solid rgba(0,0,0,0.05)',
-                borderRadius: '6px',
-                color: 'var(--deep-ocean)',
-              }}
-            >
-              {rejectProduksi}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr 1fr',
+              gap: '0.85rem',
+              background: '#F8FAFC',
+              padding: '1rem',
+              borderRadius: '12px',
+              border: '2px solid rgba(15, 23, 42, 0.16)',
+              boxShadow: '0 2px 8px rgba(15, 23, 42, 0.01)',
+            }}
+          >
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                REJECT CUTTING
+              </label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_cutting === 0 ? '' : activeLine.reject_cutting ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_cutting', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rCutting}
+                </div>
+              )}
             </div>
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>BTJ</label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={btjVal}
-                onChange={(e) => updateLineField('btj', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {btjVal}
-              </div>
-            )}
-          </div>
-
-          {/* Row 5 */}
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              BARANG HILANG
-            </label>
-            {isEdit ? (
-              <input
-                type="number"
-                value={bHilang}
-                onChange={(e) => updateLineField('barang_hilang', parseInt(e.target.value) || 0)}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.15)',
-                  borderRadius: '6px',
-                  outline: 'none',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  padding: '0.35rem 0.5rem',
-                  fontSize: '0.74rem',
-                  fontWeight: 700,
-                  background: '#F1F5F9',
-                  border: '1px solid rgba(0,0,0,0.03)',
-                  borderRadius: '6px',
-                  color: 'var(--deep-ocean)',
-                }}
-              >
-                {bHilang}
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              TOTAL REJECT QTY
-            </label>
-            <div
-              style={{
-                padding: '0.35rem 0.5rem',
-                fontSize: '0.74rem',
-                fontWeight: 800,
-                background: '#E2E8F0',
-                border: '1px solid rgba(0,0,0,0.05)',
-                borderRadius: '6px',
-                color: '#EF4444',
-              }}
-            >
-              {totalReject}
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT SEWING</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_sewing === 0 ? '' : activeLine.reject_sewing ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_sewing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rSewing}
+                </div>
+              )}
             </div>
-          </div>
-          <div>
-            <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              TOTAL GOOD QTY
-            </label>
-            <div
-              style={{
-                padding: '0.35rem 0.5rem',
-                fontSize: '0.74rem',
-                fontWeight: 900,
-                background: '#D1FAE5',
-                border: '1px solid rgba(16,185,129,0.12)',
-                borderRadius: '6px',
-                color: '#10B981',
-              }}
-            >
-              {totalGood}
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                REJECT FINISHING
+              </label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_finishing === 0 ? '' : activeLine.reject_finishing ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_finishing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rFinishing}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT WASHING</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_washing === 0 ? '' : activeLine.reject_washing ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_washing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rWashing}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT PRINTING</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_printing === 0 ? '' : activeLine.reject_printing ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_printing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rPrinting}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>REJECT EMBRO</label>
+              {isEdit ? (
+                <input
+                  type="number"
+                  value={activeLine.reject_embro === 0 ? '' : activeLine.reject_embro ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    updateLineField('reject_embro', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                  }}
+                  className="qms-num-input"
+                  style={{
+                    width: '100%',
+                    padding: '0.35rem 0.45rem',
+                    fontSize: '0.74rem',
+                    border: '2px solid rgba(15, 23, 42, 0.16)',
+                    borderRadius: '6px',
+                    outline: 'none',
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    padding: '0.35rem 0.5rem',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    background: '#F1F5F9',
+                    border: '1px solid rgba(0,0,0,0.03)',
+                    borderRadius: '6px',
+                    color: 'var(--deep-ocean)',
+                  }}
+                >
+                  {rEmbro}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                REJECT PRODUKSI
+              </label>
+              <div
+                style={{
+                  padding: '0.35rem 0.5rem',
+                  fontSize: '0.74rem',
+                  fontWeight: 900,
+                  background: '#F1F5F9',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
+                  borderRadius: '6px',
+                  color: 'var(--deep-ocean)',
+                }}
+              >
+                {rejectProduksi}
+              </div>
+            </div>
+            <div style={{ visibility: 'hidden' }}>
+              {/* Spacer slot to fill 4-column row */}
             </div>
           </div>
         </div>
@@ -682,7 +891,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
   if (sessionEditMode) {
     return (
       <>
-        {/* CARD 1: Inspection Details & Metrics (Top) */}
+        {/* CARD 1: Inspection Details (Top) */}
         <div className="bento-card" style={cardStyle}>
           <h4
             style={{
@@ -695,7 +904,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               paddingBottom: '0.35rem',
             }}
           >
-            1. Inspection Details & General Metrics
+            1. Inspection Details
           </h4>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.65rem' }}>
             <div>
@@ -710,7 +919,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -718,7 +927,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             </div>
             <div>
               <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                INSPECTOR NAME
+                INSPECTED BY
               </label>
               <input
                 type="text"
@@ -729,7 +938,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -737,7 +946,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             </div>
             <div>
               <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                FACTORY REPRESENTATIVE
+                CONFIRMED BY
               </label>
               <input
                 type="text"
@@ -748,7 +957,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -760,13 +969,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.qty_available || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, qty_available: parseInt(e.target.value) || 0 }))}
+                value={activeSession.qty_available === 0 ? '' : activeSession.qty_available ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, qty_available: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -776,13 +993,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>TOTAL STORE</label>
               <input
                 type="number"
-                value={activeSession.total_store || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, total_store: parseInt(e.target.value) || 0 }))}
+                value={activeSession.total_store === 0 ? '' : activeSession.total_store ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, total_store: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -794,13 +1019,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.store_inspected || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, store_inspected: parseInt(e.target.value) || 0 }))}
+                value={activeSession.store_inspected === 0 ? '' : activeSession.store_inspected ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, store_inspected: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -811,13 +1044,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               <input
                 type="number"
                 step="0.1"
-                value={activeSession.aql || 0.0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, aql: parseFloat(e.target.value) || 0.0 }))}
+                value={activeSession.aql === 0 ? '' : activeSession.aql ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, aql: cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -828,13 +1069,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               <input
                 type="number"
                 step="0.1"
-                value={activeSession.level_val || 0.0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, level_val: parseFloat(e.target.value) || 0.0 }))}
+                value={activeSession.level_val === 0 ? '' : activeSession.level_val ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, level_val: cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
@@ -846,39 +1095,25 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.sampling_pcs || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, sampling_pcs: parseInt(e.target.value) || 0 }))}
+                value={activeSession.sampling_pcs === 0 ? '' : activeSession.sampling_pcs ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, sampling_pcs: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                }}
+                className="qms-num-input"
                 style={{
                   width: '100%',
                   padding: '0.35rem 0.45rem',
                   fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
                   borderRadius: '8px',
                   outline: 'none',
                 }}
               />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                VERDICT RESULT
-              </label>
-              <select
-                value={activeSession.result || 'Pending'}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, result: e.target.value }))}
-                style={{
-                  width: '100%',
-                  padding: '0.35rem 0.45rem',
-                  fontSize: '0.74rem',
-                  border: '1.5px solid rgba(37,99,235,0.12)',
-                  borderRadius: '8px',
-                  outline: 'none',
-                  background: 'white',
-                }}
-              >
-                <option value="Pending">Pending</option>
-                <option value="Passed">Passed</option>
-                <option value="Failed">Failed</option>
-              </select>
             </div>
           </div>
         </div>
@@ -896,20 +1131,20 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               paddingBottom: '0.35rem',
             }}
           >
-            2. Garment Checklist verification
+            2. Garment Checklist
           </h4>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
             {[
-              { field: 'check_wash', label: 'Wash approved' },
-              { field: 'check_style_as_sample', label: 'Style as sample' },
-              { field: 'check_main_label', label: 'Main Label correct' },
-              { field: 'check_flag_fit_label', label: 'Flag/Fit Label correct' },
-              { field: 'check_print_embro_artwork', label: 'Print/Embro Artwork' },
-              { field: 'check_hangtag', label: 'Hangtag applied' },
-              { field: 'check_waist_tag', label: 'Waist Tag applied' },
-              { field: 'check_barcode', label: 'Barcode scanned correct' },
-              { field: 'check_packing_list', label: 'Packing List matches' },
-              { field: 'check_shipping_mark', label: 'Shipping Mark verified' },
+              { field: 'check_wash', label: 'Wash' },
+              { field: 'check_style_as_sample', label: 'Style as Sample' },
+              { field: 'check_main_label', label: 'Main Label' },
+              { field: 'check_flag_fit_label', label: 'Flag/Fit Label' },
+              { field: 'check_print_embro_artwork', label: 'Print/Embro' },
+              { field: 'check_hangtag', label: 'Hangtag' },
+              { field: 'check_waist_tag', label: 'Waist Tag' },
+              { field: 'check_barcode', label: 'Barcode' },
+              { field: 'check_packing_list', label: 'Packing List' },
+              { field: 'check_shipping_mark', label: 'Shipping Mark' },
             ].map((chk) => {
               const checked = activeSession[chk.field];
               return (
@@ -923,7 +1158,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                     padding: '0.45rem 0.65rem',
                     borderRadius: '8px',
                     background: checked ? 'rgba(37,99,235,0.05)' : '#F8FAFC',
-                    border: checked ? '1.5px solid rgba(37,99,235,0.22)' : '1.5px solid rgba(37,99,235,0.05)',
+                    border: checked ? '2px solid var(--royal-blue)' : '2px solid rgba(15, 23, 42, 0.12)',
                     cursor: 'pointer',
                     transition: 'all 0.15s ease',
                     fontSize: '0.72rem',
@@ -933,6 +1168,55 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 >
                   <span style={{ fontSize: '0.9rem', color: checked ? 'var(--royal-blue)' : 'var(--text-muted)' }}>{checked ? '☑' : '☐'}</span>
                   {chk.label}
+                </div>
+              );
+            })}
+            {[
+              { field: 'check_other_1', labelField: 'check_other_1_label', placeholder: 'Other 1 (e.g. Lining)' },
+              { field: 'check_other_2', labelField: 'check_other_2_label', placeholder: 'Other 2 (e.g. Button)' },
+            ].map((chk) => {
+              const checked = activeSession[chk.field];
+              const labelText = activeSession[chk.labelField] || '';
+              return (
+                <div
+                  key={chk.field}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: '0.45rem 0.65rem',
+                    borderRadius: '8px',
+                    background: checked ? 'rgba(37,99,235,0.05)' : '#F8FAFC',
+                    border: checked ? '2px solid var(--royal-blue)' : '2px solid rgba(15, 23, 42, 0.12)',
+                    transition: 'all 0.15s ease',
+                    fontSize: '0.72rem',
+                    fontWeight: checked ? 800 : 500,
+                    color: checked ? 'var(--royal-blue)' : 'var(--deep-ocean)',
+                  }}
+                >
+                  <span
+                    onClick={() => setActiveSession((prev: any) => ({ ...prev, [chk.field]: !checked }))}
+                    style={{ fontSize: '0.9rem', color: checked ? 'var(--royal-blue)' : 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }}
+                  >
+                    {checked ? '☑' : '☐'}
+                  </span>
+                  <input
+                    type="text"
+                    value={labelText}
+                    onChange={(e) => setActiveSession((prev: any) => ({ ...prev, [chk.labelField]: e.target.value }))}
+                    placeholder={chk.placeholder}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      outline: 'none',
+                      fontSize: '0.72rem',
+                      fontWeight: checked ? 800 : 500,
+                      color: checked ? 'var(--royal-blue)' : 'var(--deep-ocean)',
+                      width: '100%',
+                      padding: 0,
+                      margin: 0
+                    }}
+                  />
                 </div>
               );
             })}
@@ -961,9 +1245,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.cutting_pcs || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, cutting_pcs: parseInt(e.target.value) || 0 }))}
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '1.5px solid rgba(37,99,235,0.12)', borderRadius: '8px', outline: 'none' }}
+                value={activeSession.cutting_pcs ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, cutting_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                className="qms-num-input"
+                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
             </div>
             <div>
@@ -972,9 +1260,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.sewing_pcs || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, sewing_pcs: parseInt(e.target.value) || 0 }))}
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '1.5px solid rgba(37,99,235,0.12)', borderRadius: '8px', outline: 'none' }}
+                value={activeSession.sewing_pcs ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, sewing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                className="qms-num-input"
+                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
             </div>
             <div>
@@ -983,9 +1275,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.finishing_pcs || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, finishing_pcs: parseInt(e.target.value) || 0 }))}
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '1.5px solid rgba(37,99,235,0.12)', borderRadius: '8px', outline: 'none' }}
+                value={activeSession.finishing_pcs ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, finishing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                className="qms-num-input"
+                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
             </div>
             <div>
@@ -994,9 +1290,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.packing_pcs || 0}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, packing_pcs: parseInt(e.target.value) || 0 }))}
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '1.5px solid rgba(37,99,235,0.12)', borderRadius: '8px', outline: 'none' }}
+                value={activeSession.packing_pcs ?? ''}
+                placeholder="0"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, packing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                className="qms-num-input"
+                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
             </div>
           </div>
@@ -1004,19 +1304,54 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
 
         {/* CARD 4: CMT-Pak Details Grid per Size */}
         <div className="bento-card" style={cardStyle}>
-          <h4
+          <div
             style={{
-              fontSize: '0.76rem',
-              fontWeight: 900,
-              color: 'var(--royal-blue)',
-              textTransform: 'uppercase',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
               marginBottom: '0.5rem',
               borderBottom: '1px solid rgba(37,99,235,0.06)',
               paddingBottom: '0.35rem',
             }}
           >
-            4. Production Details Report per Size
-          </h4>
+            <h4
+              style={{
+                fontSize: '0.76rem',
+                fontWeight: 900,
+                color: 'var(--royal-blue)',
+                textTransform: 'uppercase',
+                margin: 0,
+              }}
+            >
+              4. Production Details Report
+            </h4>
+            <button
+              type="button"
+              onClick={handleRefetchReportLines}
+              title="Refresh baseline cutting quantities from Dynamics 365"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                border: 'none',
+                background: 'rgba(37, 99, 235, 0.08)',
+                color: 'var(--royal-blue)',
+                padding: '0.25rem 0.55rem',
+                borderRadius: '6px',
+                fontSize: '0.62rem',
+                fontWeight: 800,
+                cursor: 'pointer',
+                transition: 'background 0.2s ease',
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(37, 99, 235, 0.16)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(37, 99, 235, 0.08)'}
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: 'middle' }}>
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+              </svg>
+              Sync D365
+            </button>
+          </div>
           {renderSizeDetailsGrid(true)}
         </div>
       </>
@@ -1026,7 +1361,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
   // Read-only Mode
   return (
     <>
-      {/* CARD 1: Inspection Details & Metrics (Top) */}
+      {/* CARD 1: Inspection Details (Top) */}
       <div className="bento-card" style={cardStyle}>
         <h4
           style={{
@@ -1039,7 +1374,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             paddingBottom: '0.35rem',
           }}
         >
-          1. Inspection Details & General Metrics
+          1. Inspection Details
         </h4>
         <div
           style={{
@@ -1049,7 +1384,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             background: '#F8FAFC',
             padding: '0.85rem',
             borderRadius: '12px',
-            border: '1px solid rgba(37,99,235,0.05)',
+            border: '2px solid rgba(15, 23, 42, 0.12)',
           }}
         >
           <div>
@@ -1057,12 +1392,12 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--deep-ocean)' }}>{activeSession.inspection_date || 'N/A'}</div>
           </div>
           <div>
-            <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>INSPECTOR NAME</span>
+            <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>INSPECTED BY</span>
             <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--deep-ocean)' }}>{activeSession.inspector || 'N/A'}</div>
           </div>
           <div>
             <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-              FACTORY REPRESENTATIVE
+              CONFIRMED BY
             </span>
             <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--deep-ocean)' }}>{activeSession.factory_representative || 'N/A'}</div>
           </div>
@@ -1106,20 +1441,22 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             paddingBottom: '0.35rem',
           }}
         >
-          2. Garment Checklist Verification
+          2. Garment Checklist
         </h4>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
           {[
-            { field: 'check_wash', label: 'Wash approved' },
-            { field: 'check_style_as_sample', label: 'Style as sample' },
-            { field: 'check_main_label', label: 'Main Label correct' },
-            { field: 'check_flag_fit_label', label: 'Flag/Fit Label correct' },
-            { field: 'check_print_embro_artwork', label: 'Print/Embro Artwork' },
-            { field: 'check_hangtag', label: 'Hangtag applied' },
-            { field: 'check_waist_tag', label: 'Waist Tag applied' },
-            { field: 'check_barcode', label: 'Barcode scanned correct' },
-            { field: 'check_packing_list', label: 'Packing List matches' },
-            { field: 'check_shipping_mark', label: 'Shipping Mark verified' },
+            { field: 'check_wash', label: 'Wash' },
+            { field: 'check_style_as_sample', label: 'Style as Sample' },
+            { field: 'check_main_label', label: 'Main Label' },
+            { field: 'check_flag_fit_label', label: 'Flag/Fit Label' },
+            { field: 'check_print_embro_artwork', label: 'Print/Embro' },
+            { field: 'check_hangtag', label: 'Hangtag' },
+            { field: 'check_waist_tag', label: 'Waist Tag' },
+            { field: 'check_barcode', label: 'Barcode' },
+            { field: 'check_packing_list', label: 'Packing List' },
+            { field: 'check_shipping_mark', label: 'Shipping Mark' },
+            ...(activeSession.check_other_1_label?.trim() ? [{ field: 'check_other_1', label: activeSession.check_other_1_label.trim() }] : []),
+            ...(activeSession.check_other_2_label?.trim() ? [{ field: 'check_other_2', label: activeSession.check_other_2_label.trim() }] : []),
           ].map((chk) => {
             const checked = activeSession[chk.field];
             return (
@@ -1132,13 +1469,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   padding: '0.45rem 0.65rem',
                   borderRadius: '8px',
                   background: checked ? 'rgba(16,185,129,0.04)' : '#F8FAFC',
-                  border: checked ? '1.5px solid rgba(16,185,129,0.15)' : '1.5px solid rgba(0,0,0,0.03)',
+                  border: checked ? '2px solid rgba(16, 185, 129, 0.3)' : '2px solid rgba(15, 23, 42, 0.1)',
                   fontSize: '0.72rem',
                   fontWeight: checked ? 800 : 500,
                   color: checked ? '#10B981' : 'var(--text-muted)',
                 }}
               >
-                <span style={{ fontSize: '0.9rem', color: checked ? '#10B981' : 'var(--text-muted)' }}>{checked ? '✓' : '✗'}</span>
+                <span style={{ fontSize: '0.9rem', color: checked ? '#10B981' : 'var(--text-muted)' }}>{checked ? '✓' : '☐'}</span>
                 {chk.label}
               </div>
             );
@@ -1146,7 +1483,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
         </div>
       </div>
 
-      {/* CARD 3: Production Status Group (Bottom) */}
+      {/* CARD 3: Production Status (Bottom) */}
       <div className="bento-card" style={cardStyle}>
         <h4
           style={{
@@ -1159,7 +1496,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             paddingBottom: '0.35rem',
           }}
         >
-          3. Production Status Group
+          3. Production Status
         </h4>
         <div
           style={{
@@ -1169,7 +1506,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
             background: '#F8FAFC',
             padding: '0.85rem',
             borderRadius: '12px',
-            border: '1px solid rgba(37,99,235,0.05)',
+            border: '2px solid rgba(15, 23, 42, 0.12)',
           }}
         >
           <div>
@@ -1193,19 +1530,54 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
 
       {/* CARD 4: CMT-Pak Details Grid per Size */}
       <div className="bento-card" style={cardStyle}>
-        <h4
+        <div
           style={{
-            fontSize: '0.76rem',
-            fontWeight: 900,
-            color: 'var(--royal-blue)',
-            textTransform: 'uppercase',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
             marginBottom: '0.5rem',
             borderBottom: '1px solid rgba(37,99,235,0.06)',
             paddingBottom: '0.35rem',
           }}
         >
-          4. Production Details Report per Size
-        </h4>
+          <h4
+            style={{
+              fontSize: '0.76rem',
+              fontWeight: 900,
+              color: 'var(--royal-blue)',
+              textTransform: 'uppercase',
+              margin: 0,
+            }}
+          >
+            4. Production Details Report
+          </h4>
+          <button
+            type="button"
+            onClick={handleRefetchReportLines}
+            title="Refresh baseline cutting quantities from Dynamics 365"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.25rem',
+              border: 'none',
+              background: 'rgba(37, 99, 235, 0.08)',
+              color: 'var(--royal-blue)',
+              padding: '0.25rem 0.55rem',
+              borderRadius: '6px',
+              fontSize: '0.62rem',
+              fontWeight: 800,
+              cursor: 'pointer',
+              transition: 'background 0.2s ease',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(37, 99, 235, 0.16)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(37, 99, 235, 0.08)'}
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: 'middle' }}>
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+            </svg>
+            Sync D365
+          </button>
+        </div>
         {renderSizeDetailsGrid(false)}
       </div>
     </>

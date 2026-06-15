@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "example_app",
+  "productName": "Chimera MES - QC Console",
   "version": "0.1.0",
   "identifier": "com.temporary.exampleapp",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Chimera MES - Manufacturing Execution System",
+        "title": "Chimera MES - QC Console",
         "fullscreen": true,
         "width": 800,
         "height": 600

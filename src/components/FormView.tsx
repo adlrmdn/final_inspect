@@ -4,14 +4,17 @@ import { QCInspectionTemplate } from '../models/qc_template';
 import { QCInspectionReport } from '../models/qc_report';
 import { ScannerService, ScanPhase } from '../services/scanner_service';
 import { DEFAULT_TOTAL_QTY, SCRAP_COEFFICIENT, STATUS_DEFECT_MAP } from '../config/yield_constants';
-import { invoke } from '@tauri-apps/api/core';
 import { SyncEngine } from '../services/sync_engine';
+import { PackagingService } from '../services/packaging_service';
+import { USER_GUIDELINES_SECTIONS } from '../services/user_guidelines';
+import { AIAgentService, getFuzzyMatchScore } from '../services/ai_agent_service';
 
 import { ChatMessage } from '../hooks/useChatEngine';
 
 import { FormHeader } from './workspace/FormHeader';
 import { WorkspaceControls } from './workspace/WorkspaceControls';
 import { BentoInspectionCards } from './workspace/BentoInspectionCards';
+import { PrintReport } from './workspace/PrintReport';
 import { RightDefectPane } from './workspace/RightDefectPane';
 import { ProjectSelectionDirectory } from './workspace/ProjectSelectionDirectory';
 
@@ -32,6 +35,10 @@ interface FormViewProps {
   chatEndRef: React.RefObject<HTMLDivElement | null>;
   onMinimize: () => void;
   onClose: () => void;
+  chatRegistryRef?: React.MutableRefObject<{
+    executeWorkflowCommand?: (command: string, data?: any) => Promise<string>;
+    getActiveProjectDetails?: () => { projectId?: string; sessionId?: string };
+  }>;
 }
 
 const CYCLE_NAMES = [
@@ -49,10 +56,55 @@ const getCycleName = (cycleNum: number) => {
   return `Cycle ${cycleNum}`;
 };
 
-const getCycleNameFromSessionId = (sessionId: string, sessions: any[]) => {
-  const ses = (sessions || []).find((s: any) => s.session_id === sessionId);
-  return ses ? getCycleName(ses.cycle_number) : 'Unknown Version';
+interface DeductionResult {
+  hasDeduction: boolean;
+  deductionAmount: number;
+}
+
+const calculateDeductions = (project: any, session: any): DeductionResult => {
+  if (!project || !session) {
+    return { hasDeduction: false, deductionAmount: 0 };
+  }
+
+  const salesPrice = project.sales_price || 0;
+  const penaltyPrice = salesPrice * 0.70;
+  const reportLines = session.report_lines || [];
+  
+  let sumRejectProduksi = 0;
+  let sumCuttingQty = 0;
+  let sumBarangHilang = 0;
+
+  for (const line of reportLines) {
+    const rCutting = line.reject_cutting || 0;
+    const rSewing = line.reject_sewing || 0;
+    const rFinishing = line.reject_finishing || 0;
+    const rPrinting = line.reject_printing || 0;
+    const rEmbro = line.reject_embro || 0;
+    const rWashing = line.reject_washing || 0;
+    const rejectProduksi = rCutting + rSewing + rFinishing + rPrinting + rEmbro + rWashing;
+    sumRejectProduksi += rejectProduksi;
+
+    const baseLine = (project.base_lines || []).find((bl: any) => bl.size_val === line.size_val);
+    const cuttingQty = baseLine ? (baseLine.total_good_qty || 0) : 0;
+    sumCuttingQty += cuttingQty;
+
+    sumBarangHilang += (line.barang_hilang || 0);
+  }
+
+  const allowedLimit = Math.floor(sumCuttingQty * 0.01);
+  const exceedingRejectQty = Math.max(0, sumRejectProduksi - allowedLimit);
+  const totalBarangHilang = sumBarangHilang;
+
+  const rejectProduksiPenalty = exceedingRejectQty * penaltyPrice;
+  const barangHilangPenalty = totalBarangHilang * penaltyPrice;
+  const totalDeduction = rejectProduksiPenalty + barangHilangPenalty;
+
+  return {
+    hasDeduction: totalDeduction > 0,
+    deductionAmount: totalDeduction
+  };
 };
+
 
 
 export default function FormView({
@@ -70,7 +122,8 @@ export default function FormView({
   toggleListening,
   chatEndRef,
   onMinimize,
-  onClose
+  onClose,
+  chatRegistryRef
 }: FormViewProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [template, setTemplate] = useState<QCInspectionTemplate | null>(null);
@@ -78,7 +131,17 @@ export default function FormView({
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
 
   // PLM Activity Target States
-  const [activeActivities, setActiveActivities] = useState<any[]>([]);
+  const [activeActivities, setActiveActivities] = useState<any[]>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('packaging_plm_activities');
+      if (stored) {
+        try {
+          return JSON.parse(stored);
+        } catch (e) {}
+      }
+    }
+    return [];
+  });
   const [selectedActivity, setSelectedActivity] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -148,12 +211,20 @@ export default function FormView({
   };
 
   // Packaging QC Project & Session States
-  const [packagingProjects, setPackagingProjects] = useState<any[]>([]);
+  const [packagingProjects, setPackagingProjects] = useState<any[]>(() => {
+    return PackagingService.getInstance().getStoredProjects();
+  });
   const [activePackagingProject, setActivePackagingProject] = useState<any | null>(null);
+  const [localRemovedProjects, setLocalRemovedProjects] = useState<string[]>(() => {
+    return PackagingService.getInstance().getLocalRemovedProjects();
+  });
   const [activeSession, setActiveSession] = useState<any | null>(null);
   const [sessionEditMode, setSessionEditMode] = useState<boolean>(false);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [isChatExpanded, setIsChatExpanded] = useState<boolean>(false);
+
+  // User guidelines popup states
+  const [showGuidelinesModal, setShowGuidelinesModal] = useState<boolean>(false);
+  const [guidelinesLanguage, setGuidelinesLanguage] = useState<'en' | 'id'>('en');
 
   // Selected size tab for CMT-Pak details
   const [selectedSizeTab, setSelectedSizeTab] = useState<string>('');
@@ -211,16 +282,24 @@ export default function FormView({
   const dbService = DatabaseService.getInstance();
   const scannerService = ScannerService.getInstance();
 
-  const fetchPackagingProjects = async () => {
-    setIsFetchingProjects(true);
-    try {
-      const res = await invokeSafe<any[]>('get_packaging_projects', {}, []);
-      setPackagingProjects(res || []);
+  const fetchPackagingProjects = async (silent = false) => {
+    // 1. Prioritize offline cache immediately to prevent lagging/freezing and support instant open
+    const cached = PackagingService.getInstance().getStoredProjects();
+    if (cached && cached.length > 0) {
+      setPackagingProjects(cached);
+    }
 
+    if (!silent && (!cached || cached.length === 0)) {
+      setIsFetchingProjects(true);
+    }
+    try {
+      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+      setPackagingProjects(res || []);
+  
       // If we have an active project, refresh it
       if (activePackagingProject) {
         const refreshed = res?.find((p: any) => p.project_id === activePackagingProject.project_id);
-        if (refreshed) {
+        if (refreshed && !localRemovedProjects.includes(refreshed.project_id)) {
           setActivePackagingProject(refreshed);
           if (activeSession) {
             const updatedSes = refreshed.sessions?.find((s: any) => s.session_id === activeSession.session_id);
@@ -270,19 +349,31 @@ export default function FormView({
         status: 'completed',
         ended_at: new Date().toISOString()
       };
-      await invokeSafe<void>('save_packaging_session', { session: savedSession }, undefined);
+      await PackagingService.getInstance().invokeSafe<void>('save_packaging_session', { session: savedSession }, undefined);
 
       // Save CMT-Pak session report lines if present
       if (activeSession.report_lines && activeSession.report_lines.length > 0) {
-        await invokeSafe<void>('save_packaging_project_reports', { reports: activeSession.report_lines }, undefined);
+        await PackagingService.getInstance().invokeSafe<void>('save_packaging_project_reports', { reports: activeSession.report_lines }, undefined);
       }
 
       for (const img of tempDefectImages) {
-        await invokeSafe<void>('save_packaging_defect_image', { image: img }, undefined);
+        await PackagingService.getInstance().invokeSafe<void>('save_packaging_defect_image', { image: img }, undefined);
       }
 
+      // Calculate deductions and save in the project header
+      const deductions = calculateDeductions(activePackagingProject, savedSession);
+      const updatedProjectHeader = {
+        ...activePackagingProject,
+        has_deduction: deductions.hasDeduction,
+        deduction_amount: deductions.deductionAmount,
+        updated_at: new Date().toISOString()
+      };
+      const { base_report, base_lines, sessions, defect_images, ...projectHeader } = updatedProjectHeader;
+      await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
+
       setSessionEditMode(false);
-      await fetchPackagingProjects();
+      setTempDefectImages([]);
+      await fetchPackagingProjects(true);
     } catch (e) {
       console.error('Failed to save session:', e);
       await showProfessionalAlert('Save Failed', `Failed to save inspection session: ${e}`);
@@ -291,19 +382,48 @@ export default function FormView({
     }
   };
 
+  const handleUpdateSavedDefect = async (imageId: string, field: 'major' | 'minor', value: number) => {
+    if (!activePackagingProject) return;
+    try {
+      const img = (activePackagingProject.defect_images || []).find((i: any) => i.image_id === imageId);
+      if (!img) return;
+
+      const updatedImg = {
+        ...img,
+        [field]: value
+      };
+
+      // Optimistically update React state immediately for instant UI response
+      setActivePackagingProject((prev: any) => {
+        if (!prev) return null;
+        const nextImages = (prev.defect_images || []).map((i: any) => 
+          i.image_id === imageId ? updatedImg : i
+        );
+        return { ...prev, defect_images: nextImages };
+      });
+
+      // Save to database in the background without blocking the UI thread
+      PackagingService.getInstance().invokeSafe<void>('save_packaging_defect_image', { image: updatedImg }, undefined)
+        .catch((err) => console.error('Failed to save updated defect image to database:', err));
+
+    } catch (e) {
+      console.error('Failed to update defect image:', e);
+    }
+  };
+
   const handleRemovePackagingProject = async (projectId: string) => {
     const confirmed = await showProfessionalConfirm(
       'Remove Project',
-      'Are you sure you want to remove this packaging project and all of its inspection sessions? This action cannot be undone.'
+      'Are you sure you want to remove this project from your device? (It will remain active on the cloud for other devices).'
     );
     if (!confirmed) return;
 
     setDeletingProjectId(projectId);
     try {
-      await invokeSafe<void>('delete_packaging_project', { projectId }, undefined);
-
-      // Fetch latest projects first
-      await fetchPackagingProjects();
+      // Add the projectId to the local removed list so it's hidden on this device only
+      const nextRemoved = [...localRemovedProjects, projectId];
+      setLocalRemovedProjects(nextRemoved);
+      PackagingService.getInstance().saveLocalRemovedProjects(nextRemoved);
 
       // If the deleted project was the active one, close it now
       if (activePackagingProject?.project_id === projectId) {
@@ -321,7 +441,7 @@ export default function FormView({
 
   const handleCompleteProject = async () => {
     if (!activePackagingProject) return;
-    if (sessionEditMode || activeSession) {
+    if (sessionEditMode) {
       await showProfessionalAlert(
         'Session Active',
         'Please save or cancel the active inspection session before completing the project.',
@@ -329,44 +449,130 @@ export default function FormView({
       );
       return;
     }
+
+    if (!navigator.onLine) {
+      await showProfessionalAlert(
+        'Offline Required',
+        'You must be online to complete and sync this project. Please check your internet connection.',
+        'danger'
+      );
+      return;
+    }
+
+    if (!activePackagingProject.verified_doc) {
+      await showProfessionalAlert(
+        'Verification Required',
+        'This project cannot be completed because it has not been verified. Please upload a signed verification document first.',
+        'alert'
+      );
+      return;
+    }
+
     const confirmed = await showProfessionalConfirm(
-      'Complete Project',
-      'Are you sure you want to mark this packaging project as completed? This will lock the workspace and prepare it for sync.'
+      'Complete & Sync Project',
+      'Are you sure you want to complete and sync this packaging project? This will lock the workspace and sync all data to the central database.'
     );
     if (!confirmed) return;
 
     setIsProcessing(true);
-    setProcessingMessage('Completing packaging project...');
+    setProcessingMessage('Completing & syncing packaging project...');
     try {
+      // Calculate deductions
+      let targetSession = activeSession;
+      if (!targetSession && activePackagingProject.sessions && activePackagingProject.sessions.length > 0) {
+        const sorted = [...activePackagingProject.sessions].sort((a: any, b: any) => b.cycle_number - a.cycle_number);
+        targetSession = sorted[0];
+      }
+      const deductions = calculateDeductions(activePackagingProject, targetSession);
+
       const updatedProject = {
         ...activePackagingProject,
         status: 'completed',
+        has_deduction: deductions.hasDeduction,
+        deduction_amount: deductions.deductionAmount,
         updated_at: new Date().toISOString()
       };
       const { base_report, base_lines, sessions, defect_images, ...projectHeader } = updatedProject;
-      await invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
+      await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
+
+      const syncEngine = SyncEngine.getInstance();
+      await syncEngine.synchronize();
 
       setActivePackagingProject(updatedProject);
-      await fetchPackagingProjects();
+      await fetchPackagingProjects(true);
       await showProfessionalAlert(
-        'Project Completed',
-        'Successfully marked project as completed. You can now sync the data to the central database.',
+        'Project Completed & Synced',
+        'Successfully completed and synchronized project with the central database.',
         'success'
       );
     } catch (e) {
-      console.error('Failed to complete project:', e);
-      await showProfessionalAlert('Completion Failed', `Failed to complete project: ${e}`, 'danger');
+      console.error('Failed to complete & sync project:', e);
+      await showProfessionalAlert('Completion & Sync Failed', `Failed: ${e}`, 'danger');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRevertProject = async () => {
+    if (!activePackagingProject) return;
+    if (sessionEditMode) {
+      await showProfessionalAlert(
+        'Session Active',
+        'Please save or cancel the active inspection session before reverting the project.',
+        'alert'
+      );
+      return;
+    }
+
+    if (!navigator.onLine) {
+      await showProfessionalAlert(
+        'Offline Required',
+        'You must be online to revert this project. Please check your internet connection.',
+        'danger'
+      );
+      return;
+    }
+
+    const confirmed = await showProfessionalConfirm(
+      'Revert Project Completion',
+      'WARNING: Reverting a completed project will unlock it for editing. This action must only be used to correct genuine inspection mistakes and should NOT be abused. Reverting will immediately sync the status change back to the central database.\n\nAre you sure you want to proceed?'
+    );
+    if (!confirmed) return;
+
+    setIsProcessing(true);
+    setProcessingMessage('Reverting project completion status...');
+    try {
+      const updatedProject = {
+        ...activePackagingProject,
+        status: 'downloaded',
+        updated_at: new Date().toISOString()
+      };
+      const { base_report, base_lines, sessions, defect_images, ...projectHeader } = updatedProject;
+      await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
+
+      const syncEngine = SyncEngine.getInstance();
+      await syncEngine.synchronize();
+
+      setActivePackagingProject(updatedProject);
+      await fetchPackagingProjects(true);
+      await showProfessionalAlert(
+        'Project Reverted',
+        'Successfully reverted project completion status. The workspace is now unlocked for edits.',
+        'success'
+      );
+    } catch (e) {
+      console.error('Failed to revert project:', e);
+      await showProfessionalAlert('Revert Failed', `Failed: ${e}`, 'danger');
     } finally {
       setIsProcessing(false);
     }
   };
 
   const handleSyncProject = async (_projectId: string) => {
-    setIsSyncing(true);
     try {
       const syncEngine = SyncEngine.getInstance();
       await syncEngine.synchronize();
-      await fetchPackagingProjects();
+      await fetchPackagingProjects(true);
       await showProfessionalAlert(
         'Sync Successful',
         'Packaging project and all associated QC inspection sessions have been synchronized successfully.',
@@ -375,8 +581,6 @@ export default function FormView({
     } catch (e) {
       console.error('Failed to sync project:', e);
       await showProfessionalAlert('Sync Failed', `Failed to sync project: ${e}`, 'danger');
-    } finally {
-      setIsSyncing(false);
     }
   };
 
@@ -417,6 +621,20 @@ export default function FormView({
         ...line,
         report_id: `${nextSessionId}_LINE_${idx}`,
         session_id: nextSessionId,
+        session_qty: 0.0,
+        reject_bahan: 0,
+        reject_cutting: 0,
+        reject_sewing: 0,
+        reject_finishing: 0,
+        reject_printing: 0,
+        reject_embro: 0,
+        reject_washing: 0,
+        reject_produksi: 0,
+        btj: 0,
+        barang_hilang: 0,
+        total_good_qty: line.total_good_qty || 0,
+        total_reject_qty: line.total_reject_qty || 0,
+        session_version: 'v1.0'
       }));
 
       const newSession = {
@@ -438,6 +656,10 @@ export default function FormView({
         check_barcode: currentSession.check_barcode || false,
         check_packing_list: currentSession.check_packing_list || false,
         check_shipping_mark: currentSession.check_shipping_mark || false,
+        check_other_1: currentSession.check_other_1 || false,
+        check_other_1_label: currentSession.check_other_1_label || '',
+        check_other_2: currentSession.check_other_2 || false,
+        check_other_2_label: currentSession.check_other_2_label || '',
         qty_available: currentSession.qty_available || 0,
         total_store: currentSession.total_store || 0,
         store_inspected: currentSession.store_inspected || 0,
@@ -461,17 +683,17 @@ export default function FormView({
           ...currentSession,
           status: 'completed'
         };
-        await invokeSafe<void>('save_packaging_session', { session: updatedPrevSession }, undefined);
+        await PackagingService.getInstance().invokeSafe<void>('save_packaging_session', { session: updatedPrevSession }, undefined);
       }
 
       // Save new session
-      await invokeSafe<void>('save_packaging_session', { session: newSession }, undefined);
+      await PackagingService.getInstance().invokeSafe<void>('save_packaging_session', { session: newSession }, undefined);
       if (clonedLines.length > 0) {
-        await invokeSafe<void>('save_packaging_project_reports', { reports: clonedLines }, undefined);
+        await PackagingService.getInstance().invokeSafe<void>('save_packaging_project_reports', { reports: clonedLines }, undefined);
       }
 
       // Refresh project list and state
-      const res = await invokeSafe<any[]>('get_packaging_projects', {}, []);
+      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
       setPackagingProjects(res || []);
 
       const refreshedProj = res?.find((p: any) => p.project_id === activePackagingProject.project_id);
@@ -499,168 +721,13 @@ export default function FormView({
     }
   };
 
-  // Robust, offline-resilient invoke helper that gracefully falls back to localStorage
-  const invokeSafe = async <T,>(cmd: string, args: Record<string, any> = {}, fallback: T): Promise<T> => {
-    const getStoredProjects = (): any[] => {
-      const stored = localStorage.getItem('packaging_offline_projects');
-      return stored ? JSON.parse(stored) : [];
-    };
 
-    const saveStoredProjects = (projects: any[]) => {
-      localStorage.setItem('packaging_offline_projects', JSON.stringify(projects));
-    };
-
-    const updateCacheMutation = (synced: boolean) => {
-      if (cmd === 'save_packaging_project' && args.project) {
-        const projects = getStoredProjects();
-        const p = args.project;
-        const index = projects.findIndex(item => item.project_id === p.project_id);
-        const newProj = {
-          ...p,
-          synced,
-          base_report: p.base_report || null,
-          base_lines: p.base_lines || [],
-          sessions: p.sessions || [],
-          defect_images: p.defect_images || []
-        };
-        if (index >= 0) {
-          projects[index] = { ...projects[index], ...newProj };
-        } else {
-          projects.push(newProj);
-        }
-        saveStoredProjects(projects);
-      }
-
-      if (cmd === 'save_packaging_base_report' && (args.base_report || args.baseReport)) {
-        const projects = getStoredProjects();
-        const br = args.base_report || args.baseReport;
-        const index = projects.findIndex(item => item.project_id === br.project_id);
-        if (index >= 0) {
-          projects[index].base_report = { ...br, synced };
-          projects[index].synced = synced;
-          saveStoredProjects(projects);
-        }
-      }
-
-      if (cmd === 'save_packaging_session' && args.session) {
-        const projects = getStoredProjects();
-        const ses = args.session;
-        const index = projects.findIndex(item => item.project_id === ses.project_id);
-        if (index >= 0) {
-          const sIndex = (projects[index].sessions || []).findIndex((s: any) => s.session_id === ses.session_id);
-          const newSession = { ...ses, synced };
-          if (sIndex >= 0) {
-            projects[index].sessions[sIndex] = { ...projects[index].sessions[sIndex], ...newSession };
-          } else {
-            if (!projects[index].sessions) projects[index].sessions = [];
-            projects[index].sessions.push(newSession);
-          }
-          projects[index].synced = synced;
-          saveStoredProjects(projects);
-        }
-      }
-
-      if (cmd === 'save_packaging_defect_image' && args.image) {
-        const projects = getStoredProjects();
-        const img = args.image;
-        const index = projects.findIndex(item => item.project_id === img.project_id);
-        if (index >= 0) {
-          if (!projects[index].defect_images) projects[index].defect_images = [];
-          const imgIndex = projects[index].defect_images.findIndex((d: any) => d.image_id === img.image_id);
-          const newImage = { ...img, synced };
-          if (imgIndex >= 0) {
-            projects[index].defect_images[imgIndex] = newImage;
-          } else {
-            projects[index].defect_images.push(newImage);
-          }
-          projects[index].synced = synced;
-          saveStoredProjects(projects);
-        }
-      }
-
-      if (cmd === 'save_packaging_project_reports' && args.reports) {
-        const projects = getStoredProjects();
-        const lines = args.reports;
-        if (lines.length > 0) {
-          const firstLine = lines[0];
-          const index = projects.findIndex(item => item.project_id === firstLine.project_id);
-          if (index >= 0) {
-            const sid = firstLine.session_id;
-            if (sid && sid !== 'INITIAL_PAK') {
-              const sIndex = (projects[index].sessions || []).findIndex((s: any) => s.session_id === sid);
-              if (sIndex >= 0) {
-                projects[index].sessions[sIndex].report_lines = lines.map((l: any) => ({ ...l, synced }));
-              }
-            } else {
-              projects[index].base_lines = lines.map((l: any) => ({ ...l, synced }));
-            }
-            projects[index].synced = synced;
-            saveStoredProjects(projects);
-          }
-        }
-      }
-
-      if (cmd === 'delete_packaging_project') {
-        const projects = getStoredProjects();
-        const pid = args.project_id || args.projectId;
-        const targetProj = projects.find(item => item.project_id === pid);
-        const filtered = projects.filter(item => item.project_id !== pid);
-        saveStoredProjects(filtered);
-
-        // If the deleted project was already synced to the server and we are offline, track it for future sync
-        if (!synced && targetProj && targetProj.synced !== false) {
-          const storedRemovals = localStorage.getItem('packaging_offline_removals');
-          const removals = storedRemovals ? JSON.parse(storedRemovals) : [];
-          if (!removals.includes(pid)) {
-            removals.push(pid);
-            localStorage.setItem('packaging_offline_removals', JSON.stringify(removals));
-          }
-        }
-      }
-    };
-
-    try {
-      const res = await invoke<T>(cmd, args);
-      // Cache successful queries
-      if (cmd === 'get_packaging_projects') {
-        localStorage.setItem('packaging_offline_projects', JSON.stringify(res));
-      } else if (cmd === 'get_packaging_project_reports' && (args.session_id === 'INITIAL_PAK' || args.sessionId === 'INITIAL_PAK')) {
-        const pid = args.project_id || args.projectId;
-        localStorage.setItem(`packaging_initial_reports_${pid}`, JSON.stringify(res));
-      } else {
-        updateCacheMutation(true);
-      }
-      return res;
-    } catch (e: any) {
-      const errStr = String(e || '');
-      const isConnectionError = errStr.includes('Failed to connect') || errStr.includes('timeout') || errStr.includes('connection');
-      if (!isConnectionError && cmd !== 'get_packaging_projects' && cmd !== 'get_packaging_project_reports') {
-        console.error(`Tauri invoke '${cmd}' database execution error:`, e);
-        throw e;
-      }
-
-      console.warn(`Tauri invoke '${cmd}' failed or offline. Using local safety store fallback:`, e);
-
-      if (cmd === 'get_packaging_projects') {
-        return getStoredProjects() as unknown as T;
-      }
-
-      if (cmd === 'get_packaging_project_reports' && (args.session_id === 'INITIAL_PAK' || args.sessionId === 'INITIAL_PAK')) {
-        const pid = args.project_id || args.projectId;
-        const stored = localStorage.getItem(`packaging_initial_reports_${pid}`);
-        return (stored ? JSON.parse(stored) : fallback) as unknown as T;
-      }
-
-      updateCacheMutation(false);
-      return fallback;
-    }
-  };
 
   // Load active PLM activities from backend (VSM Central source of truth)
   useEffect(() => {
     const fetchPlmActivities = async () => {
       try {
-        const list = await invokeSafe<any[]>('pg_get_active_plm_activities', {}, []);
+        const list = await PackagingService.getInstance().invokeSafe<any[]>('pg_get_active_plm_activities', {}, []);
         setActiveActivities(list || []);
       } catch (e) {
         console.error('Failed to fetch active PLM activities:', e);
@@ -670,8 +737,387 @@ export default function FormView({
   }, []);
 
   useEffect(() => {
+    if (activeActivities && activeActivities.length > 0) {
+      localStorage.setItem('packaging_plm_activities', JSON.stringify(activeActivities));
+    }
+  }, [activeActivities]);
+
+  useEffect(() => {
+    if (chatRegistryRef) {
+      chatRegistryRef.current.getActiveProjectDetails = () => {
+        return {
+          projectId: activePackagingProject?.project_id,
+          sessionId: activeSession?.session_id
+        };
+      };
+      chatRegistryRef.current.executeWorkflowCommand = async (command: string, data?: any): Promise<string> => {
+
+        if (command === 'search_styles') {
+          setSearchQuery(data.query || '');
+          setIsDropdownOpen(true);
+          return `Mencari artikel dengan kata kunci "${data.query}"...`;
+        }
+
+        if (command === 'search_and_download_project') {
+          const cleanQ = (data.query || '').toLowerCase().trim();
+          const found = activeActivities.find(act => 
+            act.article_name.toLowerCase().includes(cleanQ) || 
+            act.plm_id.toLowerCase().includes(cleanQ) ||
+            getFuzzyMatchScore(cleanQ, act.article_name) > 0.4
+          );
+          if (found) {
+            setSelectedActivity(found);
+            setTimeout(() => {
+              handleDownloadProject(found);
+            }, 100);
+            return `Menemukan style "${found.article_name}". Memulai proses download...`;
+          }
+          return `Style dengan kata kunci "${data.query}" tidak ditemukan di database PLM.`;
+        }
+
+        if (command === 'download_project') {
+          setSelectedActivity(data.activity);
+          setTimeout(() => {
+            handleDownloadProject(data.activity);
+          }, 100);
+          return `Memulai download untuk artikel "${data.activity.article_name}"...`;
+        }
+
+        if (command === 'open_project') {
+          const proj = packagingProjects.find(p => p.project_id === data.projectId);
+          if (proj) {
+            // Restore from removed list if it was removed
+            if (localRemovedProjects.includes(proj.project_id)) {
+              const nextRemoved = localRemovedProjects.filter(id => id !== proj.project_id);
+              setLocalRemovedProjects(nextRemoved);
+              PackagingService.getInstance().saveLocalRemovedProjects(nextRemoved);
+            }
+            setActivePackagingProject(proj);
+            const sessions = proj.sessions || [];
+            const validSessions = sessions
+              .filter((s: any) => s.cycle_number >= 1)
+              .sort((a: any, b: any) => b.cycle_number - a.cycle_number);
+            const latestSes = validSessions[0] || null;
+            setActiveSession(latestSes);
+            setSessionEditMode(false);
+            return `Membuka proyek QC untuk artikel "${proj.article_name}".`;
+          }
+          return `Proyek dengan ID ${data.projectId} tidak ditemukan.`;
+        }
+
+        if (command === 'update_workspace_data') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+
+          // Automatically enable edit mode if not already in edit mode
+          if (!sessionEditMode) {
+            setSessionEditMode(true);
+          }
+
+          const updates: string[] = [];
+
+          setActiveSession((prev: any) => {
+            const nextSession = { ...prev };
+
+            if (data.aql !== undefined) {
+              nextSession.aql = data.aql;
+              updates.push(`AQL -> ${data.aql}`);
+            }
+            if (data.level_val !== undefined) {
+              nextSession.level_val = data.level_val;
+              updates.push(`Level -> ${data.level_val}`);
+            }
+            if (data.sampling_pcs !== undefined) {
+              nextSession.sampling_pcs = data.sampling_pcs;
+              updates.push(`Sampling -> ${data.sampling_pcs} pcs`);
+            }
+            if (data.cutting_pcs !== undefined) {
+              nextSession.cutting_pcs = data.cutting_pcs;
+              updates.push(`Cutting -> ${data.cutting_pcs} pcs`);
+            }
+            if (data.sewing_pcs !== undefined) {
+              nextSession.sewing_pcs = data.sewing_pcs;
+              updates.push(`Sewing -> ${data.sewing_pcs} pcs`);
+            }
+            if (data.finishing_pcs !== undefined) {
+              nextSession.finishing_pcs = data.finishing_pcs;
+              updates.push(`Finishing -> ${data.finishing_pcs} pcs`);
+            }
+            if (data.packing_pcs !== undefined) {
+              nextSession.packing_pcs = data.packing_pcs;
+              updates.push(`Packing -> ${data.packing_pcs} pcs`);
+            }
+            if (data.result !== undefined) {
+              nextSession.result = data.result;
+              updates.push(`Result -> ${data.result}`);
+            }
+
+            const checklistFields = data.fields || [];
+            if (checklistFields.length > 0) {
+              for (const f of checklistFields) {
+                nextSession[f] = data.value;
+              }
+              const fieldsReadable = checklistFields.map((f: string) => f.replace('check_', '').replace(/_/g, ' ')).join(', ');
+              updates.push(`Checklists [${fieldsReadable}] -> ${data.value ? 'Checked' : 'Unchecked'}`);
+            }
+
+            const sizeQuantities = data.sizeQuantities || [];
+            if (sizeQuantities.length > 0) {
+              const nextLines = [...(nextSession.report_lines || [])];
+              for (const sq of sizeQuantities) {
+                const lineIndex = nextLines.findIndex((l: any) => l.size_val?.toUpperCase() === sq.size);
+                if (lineIndex >= 0) {
+                  const updatedLine = { ...nextLines[lineIndex], [sq.field]: sq.value };
+                  const sizeVal = nextLines[lineIndex].size_val;
+
+                  const rc = updatedLine.reject_cutting || 0;
+                  const rs = updatedLine.reject_sewing || 0;
+                  const rf = updatedLine.reject_finishing || 0;
+                  const rp = updatedLine.reject_printing || 0;
+                  const re = updatedLine.reject_embro || 0;
+                  const rw = updatedLine.reject_washing || 0;
+                  const rb = updatedLine.reject_bahan || 0;
+                  const bt = updatedLine.btj || 0;
+                  const bh = updatedLine.barang_hilang || 0;
+
+                  const newRejectProduksi = rc + rs + rf + rp + re + rw;
+
+                  const otherReject = (activePackagingProject?.sessions || [])
+                    .filter((s: any) => s.cycle_number <= nextSession.cycle_number && s.session_id !== nextSession.session_id)
+                    .reduce((sum: number, s: any) => {
+                      const line = (s.report_lines || []).find((l: any) => l.size_val === sizeVal);
+                      if (!line) return sum;
+                      const lrc = line.reject_cutting || 0;
+                      const lrs = line.reject_sewing || 0;
+                      const lrf = line.reject_finishing || 0;
+                      const lrp = line.reject_printing || 0;
+                      const lre = line.reject_embro || 0;
+                      const lrw = line.reject_washing || 0;
+                      const lrb = line.reject_bahan || 0;
+                      const lbt = line.btj || 0;
+                      const lbh = line.barang_hilang || 0;
+                      const rejProd = lrc + lrs + lrf + lrp + lre + lrw;
+                      return sum + (lrb + rejProd + lbt + lbh);
+                    }, 0);
+                  const currentReject = rb + newRejectProduksi + bt + bh;
+                  const newTotalReject = otherReject + currentReject;
+
+                  const otherGood = (activePackagingProject?.sessions || [])
+                    .filter((s: any) => s.cycle_number <= nextSession.cycle_number && s.session_id !== nextSession.session_id)
+                    .reduce((sum: number, s: any) => {
+                      const line = (s.report_lines || []).find((l: any) => l.size_val === sizeVal);
+                      return sum + (line?.session_qty || 0);
+                    }, 0);
+                  const currentQty = updatedLine.session_qty || 0;
+                  const newTotalGood = otherGood + currentQty;
+
+                  updatedLine.reject_produksi = newRejectProduksi;
+                  updatedLine.total_reject_qty = newTotalReject;
+                  updatedLine.total_good_qty = newTotalGood;
+
+                  nextLines[lineIndex] = updatedLine;
+                  updates.push(`Size ${sq.size} ${sq.field.replace(/_/g, ' ')} -> ${sq.value}`);
+                }
+              }
+              nextSession.report_lines = nextLines;
+            }
+
+            return nextSession;
+          });
+
+          return `Berhasil memperbarui data:\n${updates.map(u => `- ${u}`).join('\n')}`;
+        }
+
+        if (command === 'set_inspector_details') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+          setActiveSession((prev: any) => ({
+            ...prev,
+            [data.field]: data.name
+          }));
+          return `Mengatur nama ${data.field === 'inspector' ? 'pemeriksa' : 'pendamping pabrik'} menjadi "${data.name}".`;
+        }
+
+        if (command === 'toggle_checklist') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+          if (!sessionEditMode) return "Sesi QC dalam mode baca saja. Silakan klik 'Edit Version' terlebih dahulu.";
+          
+          const fieldsToToggle = data.fields || (data.field ? [data.field] : []);
+          if (fieldsToToggle.length === 0) return "Tidak ada field checklist yang ditentukan.";
+
+          setActiveSession((prev: any) => {
+            const nextSession = { ...prev };
+            for (const f of fieldsToToggle) {
+              nextSession[f] = data.value;
+            }
+            return nextSession;
+          });
+
+          const fieldsReadable = fieldsToToggle.map((f: string) => f.replace('check_', '').replace(/_/g, ' ')).join(', ');
+          return `Berhasil mengatur checklist "${fieldsReadable}" menjadi ${data.value ? 'AKTIF' : 'NONAKTIF'}.`;
+        }
+
+        if (command === 'set_size_quantity') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+          if (!sessionEditMode) return "Sesi QC dalam mode baca saja. Silakan klik 'Edit Version' terlebih dahulu.";
+
+          const sizeVal = data.size;
+          const field = data.field;
+          const val = data.value;
+
+          const lineIndex = (activeSession.report_lines || []).findIndex((l: any) => l.size_val?.toUpperCase() === sizeVal);
+          if (lineIndex < 0) return `Ukuran "${sizeVal}" tidak ditemukan dalam laporan ini.`;
+
+          setSelectedSizeTab(activeSession.report_lines[lineIndex].size_val);
+
+          setActiveSession((prev: any) => {
+            const nextLines = [...prev.report_lines];
+            const updatedLine = { ...nextLines[lineIndex], [field]: val };
+
+            const rc = updatedLine.reject_cutting || 0;
+            const rs = updatedLine.reject_sewing || 0;
+            const rf = updatedLine.reject_finishing || 0;
+            const rp = updatedLine.reject_printing || 0;
+            const re = updatedLine.reject_embro || 0;
+            const rw = updatedLine.reject_washing || 0;
+            const rb = updatedLine.reject_bahan || 0;
+            const bt = updatedLine.btj || 0;
+            const bh = updatedLine.barang_hilang || 0;
+
+            const newRejectProduksi = rc + rs + rf + rp + re + rw;
+            
+            // Cumulative reject calculation
+            const otherReject = (activePackagingProject?.sessions || [])
+              .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+              .reduce((sum: number, s: any) => {
+                const line = (s.report_lines || []).find((l: any) => l.size_val === activeSession.report_lines[lineIndex].size_val);
+                if (!line) return sum;
+                const lrc = line.reject_cutting || 0;
+                const lrs = line.reject_sewing || 0;
+                const lrf = line.reject_finishing || 0;
+                const lrp = line.reject_printing || 0;
+                const lre = line.reject_embro || 0;
+                const lrw = line.reject_washing || 0;
+                const lrb = line.reject_bahan || 0;
+                const lbt = line.btj || 0;
+                const lbh = line.barang_hilang || 0;
+                const rejProd = lrc + lrs + lrf + lrp + lre + lrw;
+                return sum + (lrb + rejProd + lbt + lbh);
+              }, 0);
+            const currentReject = rb + newRejectProduksi + bt + bh;
+            const newTotalReject = otherReject + currentReject;
+            
+            // Cumulative good qty calculation
+            const otherGood = (activePackagingProject?.sessions || [])
+              .filter((s: any) => s.cycle_number <= activeSession.cycle_number && s.session_id !== activeSession.session_id)
+              .reduce((sum: number, s: any) => {
+                const line = (s.report_lines || []).find((l: any) => l.size_val === activeSession.report_lines[lineIndex].size_val);
+                return sum + (line?.session_qty || 0);
+              }, 0);
+            const currentQty = updatedLine.session_qty || 0;
+            const newTotalGood = otherGood + currentQty;
+
+            updatedLine.reject_produksi = newRejectProduksi;
+            updatedLine.total_reject_qty = newTotalReject;
+            updatedLine.total_good_qty = newTotalGood;
+
+            nextLines[lineIndex] = updatedLine;
+            return { ...prev, report_lines: nextLines };
+          });
+
+          return `Mengatur **${field.replace(/_/g, ' ')}** ukuran **${sizeVal}** menjadi **${val}**.`;
+        }
+
+        if (command === 'log_defect') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+          if (!sessionEditMode) return "Sesi QC dalam mode baca saja. Silakan klik 'Edit Version' terlebih dahulu.";
+
+          const newImg = {
+            image_id: `IMG-${activePackagingProject?.project_id}-${Date.now()}-${tempDefectImages.length}`,
+            project_id: activePackagingProject?.project_id || '',
+            session_id: activeSession?.session_id || null,
+            image_path: 'attached_via_chat.png',
+            defect_type: data.type,
+            description: data.description,
+            major: data.major,
+            minor: data.minor,
+            captured_at: new Date().toISOString()
+          };
+          setTempDefectImages(prev => [newImg, ...prev]);
+          return `Mencatat cacat foto: ${data.type} ("${data.description}"), Major: ${data.major}, Minor: ${data.minor}.`;
+        }
+
+        if (command === 'edit_version') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif. Silakan buka proyek terlebih dahulu.";
+          if (sessionEditMode) return "Sesi QC sudah dalam mode edit.";
+          setSessionEditMode(true);
+          return "Berhasil mengaktifkan mode edit untuk sesi QC.";
+        }
+
+        if (command === 'cancel_edit') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif.";
+          if (!sessionEditMode) return "Sesi QC sudah dalam mode baca saja.";
+          setSessionEditMode(false);
+          setTempDefectImages([]);
+          const original = activePackagingProject.sessions?.find((s: any) => s.session_id === activeSession.session_id);
+          if (original) {
+            setActiveSession(original);
+          } else {
+            setActiveSession(null);
+          }
+          return "Berhasil membatalkan perubahan dan mengembalikan ke mode baca saja.";
+        }
+
+        if (command === 'save_session') {
+          if (!activeSession) return "Tidak ada sesi inspeksi yang aktif.";
+          if (!sessionEditMode) return "Sesi QC sudah tersimpan.";
+          handleSaveSession();
+          return "Sesi QC berhasil disimpan.";
+        }
+
+        if (command === 'move_version') {
+          if (!activePackagingProject) return "Tidak ada proyek aktif.";
+          handleMoveVersion();
+          return "Memulai siklus / versi inspeksi berikutnya...";
+        }
+
+        if (command === 'verify_project') {
+          if (!activePackagingProject) return "Tidak ada proyek aktif.";
+          const mockBase64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+          await handleUploadVerificationDoc(activePackagingProject.project_id, mockBase64);
+          return "Proyek berhasil diverifikasi dengan dokumen verifikasi bertanda tangan.";
+        }
+
+        if (command === 'complete_project') {
+          if (!activePackagingProject) return "Tidak ada proyek aktif.";
+          handleCompleteProject();
+          return "Menyelesaikan proyek QC...";
+        }
+
+        if (command === 'sync_project') {
+          if (!activePackagingProject) return "Tidak ada proyek aktif.";
+          handleSyncProject(activePackagingProject.project_id);
+          return "Memulai sinkronisasi data ke cloud...";
+        }
+
+        if (command === 'print_report') {
+          if (!activePackagingProject) return "Tidak ada proyek aktif. Silakan buka proyek terlebih dahulu.";
+          handlePrintReport();
+          return "Membuka dialog cetak laporan QC...";
+        }
+
+        return `Perintah "${command}" tidak dikenal.`;
+      };
+    }
+    return () => {
+      if (chatRegistryRef) {
+        chatRegistryRef.current.executeWorkflowCommand = undefined;
+        chatRegistryRef.current.getActiveProjectDetails = undefined;
+      }
+    };
+  }, [chatRegistryRef, activePackagingProject, activeSession, sessionEditMode, packagingProjects, activeActivities, tempDefectImages, localRemovedProjects]);
+
+  useEffect(() => {
     if (templateId === 'pack_v0') {
-      fetchPackagingProjects();
+      fetchPackagingProjects(true);
     }
   }, [templateId]);
 
@@ -729,6 +1175,24 @@ export default function FormView({
       }
     }
   }, [activeSession, selectedSizeTab]);
+
+  // Clear temporary defect images draft and input fields when session or project changes
+  useEffect(() => {
+    setTempDefectImages([]);
+    setDefectImagePathInput('');
+    setSelectedImageBase64('');
+    setDefectDescInput('');
+    setDefectMajorInput(0);
+    setDefectMinorInput(0);
+  }, [activeSession?.session_id, activePackagingProject?.project_id]);
+
+  useEffect(() => {
+    AIAgentService.getInstance().setActiveProjectId(activePackagingProject?.project_id || null);
+    // Cleanup on unmount
+    return () => {
+      AIAgentService.getInstance().setActiveProjectId(null);
+    };
+  }, [activePackagingProject]);
 
   const handleInputChange = (fieldName: string, value: any) => {
     setFormData(prev => ({
@@ -798,17 +1262,42 @@ export default function FormView({
   };
 
   // QMS Actions & Handlers
-  const handleDownloadProject = async () => {
-    if (!selectedActivity) return;
+  const handleDownloadProject = async (activityOverride?: any) => {
+    // Safety check: if activityOverride is a React SyntheticEvent, ignore it and fall back to selectedActivity
+    const act = (activityOverride && typeof activityOverride === 'object' && ('plm_id' in activityOverride || 'plmId' in activityOverride || 'project_id' in activityOverride))
+      ? activityOverride
+      : selectedActivity;
+    if (!act) return;
+
+    const rawPlmId = String(act.plm_id || act.plmId || act.project_id || '');
+
+    // If there is an existing project with the same plm_id that was removed locally, restore it!
+    const removedProj = packagingProjects.find(
+      (p: any) => p.plm_id === rawPlmId && localRemovedProjects.includes(p.project_id)
+    );
+    if (removedProj) {
+      const nextRemoved = localRemovedProjects.filter(id => id !== removedProj.project_id);
+      setLocalRemovedProjects(nextRemoved);
+      PackagingService.getInstance().saveLocalRemovedProjects(nextRemoved);
+
+      setSelectedActivity(null);
+
+      await showProfessionalAlert(
+        'Project Restored',
+        `Restored existing local workspace for ${removedProj.article_name}.`,
+        'success'
+      );
+      return;
+    }
 
     // Prevent double active project (duplicate downloads of the same PLM/style ID)
     const existing = packagingProjects.find(
-      (p: any) => p.plm_id === selectedActivity.plm_id
+      (p: any) => p.plm_id === rawPlmId && !localRemovedProjects.includes(p.project_id)
     );
     if (existing) {
       await showProfessionalAlert(
         'Style Already Active',
-        `A project for style '${selectedActivity.article_name}' (${selectedActivity.plm_id}) has already been downloaded and is active. Prohibiting duplicate downloads.`,
+        `A project for style '${act.article_name}' (${rawPlmId}) has already been downloaded and is active. Prohibiting duplicate downloads.`,
         'danger'
       );
       setSelectedActivity(null);
@@ -816,150 +1305,51 @@ export default function FormView({
     }
 
     setIsProcessing(true);
-    setProcessingMessage(`Downloading workspace for ${selectedActivity.article_name}...`);
+    setProcessingMessage(`Downloading workspace for ${act.article_name}...`);
     setIsDownloading(true);
     try {
       if (templateId === 'pack_v0') {
-        const projectId = `PRJ-${selectedActivity.plm_id.replace(/\//g, '-')}-${Date.now()}`;
+        const projectId = `PRJ-${rawPlmId.replace(/\//g, '-')}-${Date.now()}`;
 
         const projectObj = {
           project_id: projectId,
-          plm_id: selectedActivity.plm_id,
-          brand: selectedActivity.brand,
-          season: selectedActivity.season,
-          article_name: selectedActivity.article_name,
-          production_group: selectedActivity.production_group || 'N/A',
-          po_info: selectedActivity.po_info || null,
-          po_qty: selectedActivity.po_qty || null,
-          po_plan_date: selectedActivity.po_plan_date || null,
-          po_vendor: selectedActivity.po_vendor || null,
+          plm_id: rawPlmId,
+          brand: act.brand || 'N/A',
+          season: act.season || 'N/A',
+          article_name: act.article_name || 'N/A',
+          production_group: act.production_group || 'N/A',
+          po_info: act.po_info || null,
+          po_qty: act.po_qty || null,
+          po_plan_date: act.po_plan_date || null,
+          po_vendor: act.po_vendor || null,
           status: 'downloaded',
+          sales_price: null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
         };
 
-        let onlineSucceeded = false;
-        try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('save_packaging_project', { project: projectObj });
-          onlineSucceeded = true;
-        } catch (e: any) {
-          console.warn('save_packaging_project online invoke failed, calling offline fallback:', e);
-          await invokeSafe<void>('save_packaging_project', { project: projectObj }, undefined);
-        }
+        await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectObj }, undefined);
 
-        if (!onlineSucceeded) {
-          // We are offline! Construct default Session 0 and Session 1 in localStorage
-          const totalQty = selectedActivity.po_qty ? Math.round(selectedActivity.po_qty) : 0;
-
-          const cycle0Session = {
-            session_id: `BASE-${projectId}`,
-            project_id: projectId,
-            cycle_number: 0,
-            inspector_id: 'system',
-            status: 'completed',
-            started_at: new Date().toISOString(),
-            ended_at: new Date().toISOString(),
-            inspection_date: new Date().toISOString().split('T')[0],
-            check_wash: true,
-            check_style_as_sample: true,
-            check_main_label: true,
-            check_flag_fit_label: true,
-            check_print_embro_artwork: true,
-            check_hangtag: true,
-            check_waist_tag: true,
-            check_barcode: true,
-            check_packing_list: true,
-            check_shipping_mark: true,
-            qty_available: totalQty,
-            total_store: totalQty,
-            store_inspected: totalQty,
-            cutting_pcs: totalQty,
-            sewing_pcs: totalQty,
-            finishing_pcs: totalQty,
-            packing_pcs: totalQty,
-            sampling_pcs: 0,
-            aql: 2.5,
-            level_val: 1.0,
-            factory_representative: 'System Baseline',
-            inspector: 'System (CMT-Cut)',
-            version: 'Baseline',
-            result: 'Passed'
-          };
-
-          const cycle1Session = {
-            session_id: `SES-${projectId}-1`,
-            project_id: projectId,
-            cycle_number: 1,
-            inspector_id: 'inspector-1',
-            status: 'pending',
-            started_at: new Date().toISOString(),
-            ended_at: null,
-            inspection_date: new Date().toISOString().split('T')[0],
-            check_wash: false,
-            check_style_as_sample: false,
-            check_main_label: false,
-            check_flag_fit_label: false,
-            check_print_embro_artwork: false,
-            check_hangtag: false,
-            check_waist_tag: false,
-            check_barcode: false,
-            check_packing_list: false,
-            check_shipping_mark: false,
-            qty_available: totalQty,
-            total_store: 0,
-            store_inspected: 0,
-            cutting_pcs: totalQty,
-            sewing_pcs: totalQty,
-            finishing_pcs: totalQty,
-            packing_pcs: totalQty,
-            sampling_pcs: 0,
-            aql: 2.5,
-            level_val: 1.0,
-            factory_representative: '',
-            inspector: '',
-            version: 'v1.0',
-            result: 'Pending'
-          };
-
-          await invokeSafe<void>('save_packaging_session', { session: cycle0Session }, undefined);
-          await invokeSafe<void>('save_packaging_session', { session: cycle1Session }, undefined);
-
-          // Copy INITIAL_PAK lines into Session 1 reports if available offline
-          let templateLines: any[] = [];
-          try {
-            const res = await invokeSafe<any[]>('get_packaging_project_reports', {
-              projectId: projectId,
-              sessionId: 'INITIAL_PAK'
-            }, []);
-            const newSessionId = `SES-${projectId}-1`;
-            templateLines = (res || []).map((line: any, idx: number) => ({
-              ...line,
-              report_id: `${newSessionId}_LINE_${idx}`,
-              session_id: newSessionId,
-              session_qty: 0.0,
-              session_version: 'v1.0'
-            }));
-          } catch (e) {
-            console.error('Failed to copy INITIAL_PAK lines offline:', e);
-          }
-          if (templateLines.length > 0) {
-            await invokeSafe<void>('save_packaging_project_reports', { reports: templateLines }, undefined);
-          }
-        }
-
-        await fetchPackagingProjects();
+        // Fetch refreshed list from DB and update the projects list
+        const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+        setPackagingProjects(res || []);
+        
         setSelectedActivity(null);
 
         // Show professional success alert
         await showProfessionalAlert(
           'Project Configured',
-          `Successfully created and configured local workspace for ${selectedActivity.article_name}.`,
+          `Successfully created and configured local workspace for ${act.article_name}.`,
           'success'
         );
       }
-    } catch (e) {
-      console.error('Failed to download project offline:', e);
+    } catch (e: any) {
+      console.error('Failed to download project:', e);
+      await showProfessionalAlert(
+        'Download Failed',
+        `Could not download workspace: ${e.message || e}`,
+        'danger'
+      );
     } finally {
       setIsProcessing(false);
       setIsDownloading(false);
@@ -969,15 +1359,14 @@ export default function FormView({
   const handleRefetchReportLines = async () => {
     if (!activePackagingProject) return;
     setIsProcessing(true);
-    setProcessingMessage('Re-fetching CMT-Pak size data from D365...');
+    setProcessingMessage('Re-fetching project baseline and size details from D365...');
     const snapshotProjectId = activePackagingProject.project_id;
     const snapshotSessionId = activeSession?.session_id;
     try {
-      // Re-call save_packaging_project which will re-trigger OData fetch and duplicate INITIAL_PAK lines to sessions
-      const { base_report, base_lines, sessions, defect_images, ...projectHeader } = activePackagingProject;
-      await invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
+      // Re-fetch baseline and size templates from D365
+      await PackagingService.getInstance().invokeSafe<void>('refresh_packaging_project_lines', { projectId: snapshotProjectId }, undefined);
       // Refresh all projects and re-select the active project & session
-      const res = await invokeSafe<any[]>('get_packaging_projects', {}, []);
+      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
       setPackagingProjects(res || []);
       const refreshed = res?.find((p: any) => p.project_id === snapshotProjectId);
       if (refreshed) {
@@ -990,10 +1379,32 @@ export default function FormView({
           }
         }
       }
-      await showProfessionalAlert('Data Refreshed', 'Size report data has been re-fetched from D365 and is now available.', 'success');
+      await showProfessionalAlert('Data Refreshed', 'Project baseline cutting quantities and size templates have been updated from D365.', 'success');
     } catch (e) {
       console.error('Failed to re-fetch report lines:', e);
       await showProfessionalAlert('Fetch Failed', `Failed to re-fetch size data: ${e}. Ensure you are connected to the network.`, 'danger');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  /**
+   * Triggers the browser's native print interface for landscape A4 report generation.
+   */
+  const handlePrintReport = () => {
+    window.print();
+  };
+
+  const handleUploadVerificationDoc = async (projectId: string, docBase64: string) => {
+    setIsProcessing(true);
+    setProcessingMessage('Saving signed verification document...');
+    try {
+      await PackagingService.getInstance().invokeSafe<void>('save_project_verification_doc', { projectId, docBase64 }, undefined);
+      await fetchPackagingProjects();
+      await showProfessionalAlert('Document Saved', 'The signed verification document has been uploaded and linked to this project.', 'success');
+    } catch (e) {
+      console.error('Failed to save verification document:', e);
+      await showProfessionalAlert('Upload Failed', `Failed to save signed document: ${e}`, 'danger');
     } finally {
       setIsProcessing(false);
     }
@@ -1011,12 +1422,15 @@ export default function FormView({
             getCycleName={getCycleName}
             handleMoveVersion={handleMoveVersion}
             handleCompleteProject={handleCompleteProject}
+            handleRevertProject={handleRevertProject}
             handleRemovePackagingProject={handleRemovePackagingProject}
             setActiveSession={setActiveSession}
             setSelectedSizeTab={setSelectedSizeTab}
             setSessionEditMode={setSessionEditMode}
             headerButtonStyle={headerButtonStyle}
             versionSelectorButtonStyle={versionSelectorButtonStyle}
+            handlePrintReport={handlePrintReport}
+            handleUploadVerificationDoc={handleUploadVerificationDoc}
           />
 
           <div style={{
@@ -1032,30 +1446,12 @@ export default function FormView({
           }}>
             {activeSession ? (
               <>
-                {/* COLUMN 2: Workspace details form/review (70% width) */}
-                <div style={{ flex: '70 1 0%', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', gap: '1rem', paddingRight: '0.75rem', paddingTop: '6px', borderRight: '1px solid rgba(37, 99, 235, 0.08)' }}>
+                <div style={{ flex: '70 1 0%', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', gap: '1rem', paddingRight: '0.75rem', paddingTop: '6px', borderRight: '2px solid rgba(15, 23, 42, 0.12)' }}>
                   
                   {/* Document Title Header */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1.5px solid rgba(37, 99, 235, 0.08)', paddingBottom: '0.55rem', marginBottom: '0.25rem', textAlign: 'left', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '2px solid rgba(15, 23, 42, 0.12)', paddingBottom: '0.55rem', marginBottom: '0.25rem', textAlign: 'left', flexShrink: 0 }}>
                     <h2 style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--deep-ocean)', margin: 0, fontFamily: 'var(--font-brand)', display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
                       Final Inspection Report
-                      <span 
-                        className={`electric-badge hud-header-badge ${sessionEditMode ? 'gold' : (activeSession.result?.toLowerCase() === 'passed' ? 'emerald' : activeSession.result?.toLowerCase() === 'failed' ? 'red' : 'silver')}`} 
-                        style={{
-                           fontSize: '0.62rem',
-                           height: '18px',
-                           padding: '0 0.55rem',
-                           display: 'inline-flex',
-                           alignItems: 'center',
-                           justifyContent: 'center',
-                           lineHeight: 'normal',
-                           textTransform: 'uppercase',
-                           fontWeight: 800,
-                           borderRadius: '6px'
-                        }}
-                      >
-                        {sessionEditMode ? 'Draft' : (activeSession.result || 'Pending')}
-                      </span>
                     </h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                       {sessionEditMode ? (
@@ -1064,6 +1460,7 @@ export default function FormView({
                             type="button"
                             onClick={() => {
                               setSessionEditMode(false);
+                              setTempDefectImages([]);
                               const original = activePackagingProject.sessions?.find((s: any) => s.session_id === activeSession.session_id);
                               if (original) {
                                 setActiveSession(original);
@@ -1075,8 +1472,8 @@ export default function FormView({
                             style={{
                               ...headerButtonStyle,
                               background: 'rgba(255, 255, 255, 0.6)',
-                              border: '1.5px solid rgba(37, 99, 235, 0.18)',
-                              color: 'var(--royal-blue)',
+                              border: '2px solid rgba(15, 23, 42, 0.16)',
+                              color: 'var(--text-muted)',
                             }}
                           >
                             Cancel
@@ -1126,6 +1523,129 @@ export default function FormView({
                     setActiveSession={setActiveSession}
                     handleRefetchReportLines={handleRefetchReportLines}
                   />
+
+                  {/* Verdict / Result Status Card at the bottom of Column 2 */}
+                  <div
+                    className="bento-card"
+                    style={{
+                      padding: '1.25rem',
+                      background: '#ffffff',
+                      border: '2px solid rgba(15, 23, 42, 0.16)',
+                      borderRadius: '16px',
+                      boxShadow: '0 4px 20px rgba(15, 23, 42, 0.02)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.5rem',
+                      textAlign: 'left',
+                      marginTop: '0.5rem',
+                    }}
+                  >
+                    <h4
+                      style={{
+                        fontSize: '0.76rem',
+                        fontWeight: 900,
+                        color: 'var(--royal-blue)',
+                        textTransform: 'uppercase',
+                        margin: 0,
+                        borderBottom: '1px solid rgba(37,99,235,0.06)',
+                        paddingBottom: '0.35rem',
+                      }}
+                    >
+                      Result Status
+                    </h4>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', marginTop: '0.25rem' }}>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                        Overall inspection result status for this session:
+                      </div>
+                      {sessionEditMode ? (
+                        (() => {
+                          const resultLower = activeSession.result?.toLowerCase() || 'pending';
+                          const isPassed = resultLower === 'passed';
+                          const isFailed = resultLower === 'failed';
+                          
+                          const statusColor = isPassed ? '#10B981' : isFailed ? '#EF4444' : '#F59E0B';
+                          const statusBg = isPassed ? 'rgba(16, 185, 129, 0.05)' : isFailed ? 'rgba(239, 68, 68, 0.05)' : '#FFFFFF';
+                          const statusBorder = isPassed ? '2px solid rgba(16, 185, 129, 0.38)' : isFailed ? '2px solid rgba(239, 68, 68, 0.38)' : '2px solid rgba(15, 23, 42, 0.16)';
+                          const statusText = isPassed ? '#10B981' : isFailed ? '#EF4444' : 'var(--deep-ocean)';
+                          const glowColor = isPassed ? 'rgba(16,185,129,0.4)' : isFailed ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.4)';
+                          const arrowColor = isPassed ? '%2310B981' : isFailed ? '%23EF4444' : '%23475569';
+                          const selectValue = isPassed ? 'Passed' : isFailed ? 'Failed' : 'Pending';
+
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                              <span
+                                style={{
+                                  width: '9px',
+                                  height: '9px',
+                                  borderRadius: '50%',
+                                  background: statusColor,
+                                  boxShadow: `0 0 8px ${glowColor}`,
+                                  display: 'inline-block',
+                                  transition: 'all 0.2s ease',
+                                  flexShrink: 0
+                                }}
+                              />
+                              <select
+                                value={selectValue}
+                                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, result: e.target.value }))}
+                                style={{
+                                  padding: '0.45rem 1.85rem 0.45rem 0.85rem',
+                                  fontSize: '0.82rem',
+                                  fontWeight: 800,
+                                  border: statusBorder,
+                                  borderRadius: '10px',
+                                  outline: 'none',
+                                  color: statusText,
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s ease',
+                                  WebkitAppearance: 'none',
+                                  MozAppearance: 'none',
+                                  appearance: 'none',
+                                  minWidth: '125px',
+                                  boxSizing: 'border-box',
+                                  background: `${statusBg} url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='${arrowColor}' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") no-repeat right 8px center / 12px`,
+                                }}
+                              >
+                                <option value="Pending" style={{ color: 'var(--deep-ocean)' }}>Pending</option>
+                                <option value="Passed" style={{ color: '#10B981' }}>Passed</option>
+                                <option value="Failed" style={{ color: '#EF4444' }}>Failed</option>
+                              </select>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        (() => {
+                          const resultLower = activeSession.result?.toLowerCase() || 'pending';
+                          const isPassed = resultLower === 'passed';
+                          const isFailed = resultLower === 'failed';
+                          const displayLabel = isPassed ? 'Passed' : isFailed ? 'Failed' : 'Pending';
+
+                          return (
+                            <span
+                              className={`electric-badge ${
+                                isPassed
+                                  ? 'emerald'
+                                  : isFailed
+                                  ? 'red'
+                                  : 'silver'
+                              }`}
+                              style={{
+                                fontSize: '0.85rem',
+                                padding: '0.45rem 1.25rem',
+                                fontWeight: 900,
+                                borderRadius: '10px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.05em',
+                                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.03)',
+                              }}
+                            >
+                              {displayLabel}
+                            </span>
+                          );
+                        })()
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {/* COLUMN 3: Right Pane for Defect Images & Photo Attachments (30% width) */}
@@ -1133,7 +1653,6 @@ export default function FormView({
                   activeSession={activeSession}
                   sessionEditMode={sessionEditMode}
                   activePackagingProject={activePackagingProject}
-                  getCycleNameFromSessionId={getCycleNameFromSessionId}
                   handleMoveVersion={handleMoveVersion}
                   defectImagePathInput={defectImagePathInput}
                   setDefectImagePathInput={setDefectImagePathInput}
@@ -1150,11 +1669,29 @@ export default function FormView({
                   handleAddTempDefectImage={handleAddTempDefectImage}
                   tempDefectImages={tempDefectImages}
                   setTempDefectImages={setTempDefectImages}
+                  handleUpdateSavedDefect={handleUpdateSavedDefect}
                 />
               </>
             ) : (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.78rem', border: '2px dashed rgba(37, 99, 235, 0.12)', borderRadius: '20px', padding: '2rem' }}>
-                <div style={{ width: '42px', height: '42px', borderRadius: '50%', background: 'rgba(37, 99, 235, 0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--royal-blue)', marginBottom: '0.85rem' }}>⚙</div>
+                <div
+                  style={{
+                    width: '42px',
+                    height: '42px',
+                    borderRadius: '50%',
+                    background: 'rgba(15, 23, 42, 0.05)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--deep-ocean)',
+                    marginBottom: '0.85rem',
+                  }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </div>
                 <span style={{ fontWeight: 800, color: 'var(--deep-ocean)', fontSize: '0.88rem' }}>No Active QC Inspection Version</span>
                 <p style={{ fontSize: '0.72rem', maxWidth: '300px', margin: '0.25rem 0 1rem 0', lineHeight: 1.4, textAlign: 'center' }}>
                   Select a version from the navigation bar above, or initialize the first version to begin editing quality control data.
@@ -1190,95 +1727,129 @@ export default function FormView({
             <div style={{
               flexShrink: 0,
               marginTop: '0.75rem',
-              borderTop: '1.5px solid rgba(37, 99, 235, 0.12)',
+              borderTop: '2px solid rgba(37, 99, 235, 0.12)',
               paddingTop: '0.75rem',
               display: 'flex',
               flexDirection: 'column',
               gap: '0.5rem',
-              width: '100%'
+              width: '100%',
+              position: 'relative'
             }}>
-              {/* Collapsible Chat History */}
+              {/* Workspace QMS Chat History Popup Overlay - Rendered inline directly above input to prevent any relative motion/jitter */}
               {isChatExpanded && (
-                <div
-                  className="copilot-side-card"
-                  style={{
-                    width: '100%',
-                    height: '140px',
-                    minHeight: '140px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflow: 'hidden',
-                    background: 'rgba(255, 255, 255, 0.95)',
-                    backdropFilter: 'blur(20px)',
-                    border: '2px solid rgba(37, 99, 235, 0.28)',
-                    boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
-                    borderRadius: '16px',
-                    padding: '0.85rem',
-                    animation: 'slide-up 0.2s ease-in-out'
-                  }}
-                >
-                  <div className="flex-between kaizen-center-header" style={{ marginBottom: '0.45rem', borderBottom: '1px solid rgba(37, 99, 235, 0.08)', paddingBottom: '0.35rem', flexShrink: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                      <span className="hud-logo-hexagon kaizen-logo-mini" style={{ width: '12px', height: '12px' }}></span>
-                      <span className="kaizen-title-label" style={{ fontSize: '0.74rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        Kaizen AI Assistant
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span className="electric-badge teal" style={{ fontSize: '0.52rem', padding: '0.05rem 0.35rem' }}>Online</span>
-                      <button
-                        onClick={() => setIsChatExpanded(false)}
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          fontSize: '1rem',
-                          cursor: 'pointer',
-                          fontWeight: 'bold',
-                          padding: '0 0.15rem',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          lineHeight: '1'
-                        }}
-                        title="Hide Chat History"
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  </div>
-                  <div className="hud-local-chat-scroll kaizen-chat-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: '0.1rem' }}>
-                    {chatHistory.map((msg, idx) => (
-                      <div key={idx} className={`chat-message-envelope ${msg.sender}`} style={{ marginBottom: '0.65rem' }}>
-                        {msg.sender === 'agent' && (
-                          <div className="envelope-avatar agent-avatar" title="Kaizen Assistant" style={{ width: '22px', height: '22px', marginTop: '2px' }}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                              <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2" />
-                              <circle cx="12" cy="12" r="3" />
-                            </svg>
-                          </div>
-                        )}
-                        <div className={`chat-envelope-content ${msg.sender}`} style={{ maxWidth: '85%' }}>
-                          <div className={`chat-bubble-modern ${msg.sender}`} style={{ padding: '0.4rem 0.65rem', borderRadius: '10px', borderTopLeftRadius: msg.sender === 'agent' ? '3px' : '10px', borderTopRightRadius: msg.sender === 'user' ? '3px' : '10px', boxShadow: 'none' }}>
-                            <p className="chat-bubble-text" style={{ fontSize: '0.74rem', margin: 0, lineHeight: 1.35 }}>{msg.text}</p>
-                          </div>
-                        </div>
-                        {msg.sender === 'user' && (
-                          <div className="envelope-avatar user-avatar" title="System Operator" style={{ width: '22px', height: '22px', marginTop: '2px' }}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                              <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-                              <circle cx="12" cy="7" r="4" />
-                            </svg>
-                          </div>
-                        )}
+                <>
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      setIsChatExpanded(false);
+                    }}
+                    style={{
+                      position: 'fixed',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      zIndex: 998,
+                      background: 'rgba(15, 23, 42, 0.05)',
+                    }}
+                  />
+                  <div
+                    className="kaizen-chat-popup-card"
+                    style={{
+                      position: 'absolute',
+                      bottom: '105%',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      zIndex: 999,
+                      width: '600px',
+                      maxWidth: '96vw',
+                      height: '380px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      overflow: 'hidden',
+                      background: '#ffffff',
+                      border: '2px solid rgba(37, 99, 235, 0.28)',
+                      boxShadow: '0 12px 40px rgba(15, 23, 42, 0.12)',
+                      borderRadius: '24px',
+                      padding: '1.25rem',
+                      animation: 'slide-up-centered 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                    }}
+                  >
+                    <div className="flex-between kaizen-center-header" style={{ marginBottom: '0.85rem', borderBottom: '1.5px solid rgba(15, 23, 42, 0.08)', paddingBottom: '0.55rem', flexShrink: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span className="hud-logo-hexagon kaizen-logo-mini" style={{ width: '14px', height: '14px' }}></span>
+                        <span className="kaizen-title-label" style={{ fontSize: '0.82rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--deep-ocean)' }}>
+                          Kaizen AI Chat History
+                        </span>
                       </div>
-                    ))}
-                    <div ref={chatEndRef} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span className="electric-badge teal" style={{ fontSize: '0.58rem', padding: '0.1rem 0.4rem', fontWeight: 800 }}>Online</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            setIsChatExpanded(false);
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            fontSize: '1.2rem',
+                            cursor: 'pointer',
+                            fontWeight: 'bold',
+                            padding: '0 0.2rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            lineHeight: '1'
+                          }}
+                          title="Hide Chat History"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    </div>
+                    <div className="hud-local-chat-scroll kaizen-chat-scroll" style={{ flex: 1, overflowY: 'auto', paddingRight: '0.2rem' }}>
+                      {chatHistory.length > 0 ? (
+                        chatHistory.map((msg, idx) => (
+                          <div key={idx} className={`chat-message-envelope ${msg.sender}`} style={{ marginBottom: '0.85rem', display: 'flex', gap: '0.5rem', justifyContent: msg.sender === 'user' ? 'flex-end' : 'flex-start' }}>
+                            {msg.sender === 'agent' && (
+                              <div className="envelope-avatar agent-avatar" title="Kaizen Assistant" style={{ width: '26px', height: '26px', marginTop: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(37,99,235,0.06)', borderRadius: '50%', color: 'var(--royal-blue)', border: '1px solid rgba(37,99,235,0.12)' }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                  <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </div>
+                            )}
+                            <div className={`chat-envelope-content ${msg.sender}`} style={{ maxWidth: '85%' }}>
+                              <div className={`chat-bubble-modern ${msg.sender}`} style={{ padding: '0.5rem 0.75rem', borderRadius: '12px', borderTopLeftRadius: msg.sender === 'agent' ? '3px' : '12px', borderTopRightRadius: msg.sender === 'user' ? '3px' : '12px', background: msg.sender === 'user' ? 'var(--royal-blue)' : '#F1F5F9', color: msg.sender === 'user' ? '#fff' : 'var(--deep-ocean)', boxShadow: 'none' }}>
+                                <p className="chat-bubble-text" style={{ fontSize: '0.78rem', margin: 0, lineHeight: 1.4, textAlign: 'left' }}>{msg.text}</p>
+                              </div>
+                            </div>
+                            {msg.sender === 'user' && (
+                              <div className="envelope-avatar user-avatar" title="System Operator" style={{ width: '26px', height: '26px', marginTop: '2px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(15,23,42,0.06)', borderRadius: '50%', color: 'var(--deep-ocean)', border: '1px solid rgba(15,23,42,0.12)' }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                                  <circle cx="12" cy="7" r="4" />
+                                </svg>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                          No conversation history yet.
+                        </div>
+                      )}
+                      <div ref={chatEndRef} />
+                    </div>
                   </div>
-                </div>
+                </>
               )}
 
-              {/* Chat Input Capsule Bar - Integrated Full Width */}
+              {/* Chat Input Capsule Bar - Integrated Full Width (History toggle button removed) */}
               <div
                 className="premium-chat-bar"
                 style={{
@@ -1287,33 +1858,14 @@ export default function FormView({
                   display: 'flex',
                   alignItems: 'center',
                   padding: '0.35rem 0.5rem 0.35rem 0.65rem',
-                  background: 'rgba(255, 255, 255, 0.95)',
-                  backdropFilter: 'blur(20px)',
-                  border: '2px solid rgba(37, 99, 235, 0.28)',
+                  background: '#ffffff',
+                  border: '2px solid rgba(15, 23, 42, 0.22)',
                   borderRadius: '14px',
-                  boxShadow: '0 4px 16px rgba(15, 23, 42, 0.04)'
+                  boxShadow: '0 4px 16px rgba(15, 23, 42, 0.04)',
+                  position: 'relative',
+                  zIndex: 999
                 }}
               >
-                <button
-                  type="button"
-                  onClick={() => setIsChatExpanded(!isChatExpanded)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--royal-blue)',
-                    fontSize: '0.72rem',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    marginRight: '0.45rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.25rem'
-                  }}
-                  title={isChatExpanded ? "Collapse History" : "Expand History"}
-                >
-                  💬 {isChatExpanded ? "Hide History" : "Show History"}
-                </button>
-
                 <div className={`chatbar-prefix-badge ${isListening ? 'listening-active-prefix' : ''}`} style={{ width: '22px', height: '22px', marginRight: '0.45rem' }}>
                   {isListening ? (
                     <div className="voice-visualizer-wave-inline" style={{ height: '9px', gap: '1.5px' }}>
@@ -1333,8 +1885,22 @@ export default function FormView({
                   className="premium-chat-input"
                   placeholder={isListening ? "Listening..." : "Ask Kaizen AI Assistant..."}
                   value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSendChat()}
+                  onChange={e => {
+                    setChatInput(e.target.value);
+                    if (!isChatExpanded) setIsChatExpanded(true);
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      handleSendChat();
+                      setIsChatExpanded(true);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (!isChatExpanded) setIsChatExpanded(true);
+                  }}
+                  onClick={() => {
+                    if (!isChatExpanded) setIsChatExpanded(true);
+                  }}
                   disabled={isListening}
                   style={{ fontSize: '0.78rem', flex: 1, border: 'none', outline: 'none', background: 'transparent' }}
                 />
@@ -1343,7 +1909,10 @@ export default function FormView({
                   <button
                     type="button"
                     className={`premium-mic-btn ${isListening ? 'listening-active' : ''}`}
-                    onClick={toggleListening}
+                    onClick={() => {
+                      toggleListening();
+                      if (!isChatExpanded) setIsChatExpanded(true);
+                    }}
                     title="Voice Command"
                     style={{ color: isListening ? '#FFFFFF' : 'var(--royal-blue)', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', border: 'none', background: 'transparent', cursor: 'pointer' }}
                   >
@@ -1362,7 +1931,10 @@ export default function FormView({
                   <button
                     type="button"
                     className={`premium-send-btn ${chatInput.trim() ? 'active' : ''}`}
-                    onClick={() => handleSendChat()}
+                    onClick={() => {
+                      handleSendChat();
+                      setIsChatExpanded(true);
+                    }}
                     disabled={isListening || !chatInput.trim()}
                     style={{ width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', border: 'none', cursor: 'pointer' }}
                   >
@@ -1386,14 +1958,12 @@ export default function FormView({
         isDropdownOpen={isDropdownOpen}
         setIsDropdownOpen={setIsDropdownOpen}
         activeActivities={activeActivities}
-        packagingProjects={packagingProjects}
+        packagingProjects={packagingProjects.filter(p => !localRemovedProjects.includes(p.project_id))}
         selectedActivity={selectedActivity}
         setSelectedActivity={setSelectedActivity}
         isDownloading={isDownloading}
         deletingProjectId={deletingProjectId}
-        isSyncing={isSyncing}
         handleDownloadProject={handleDownloadProject}
-        handleSyncProject={handleSyncProject}
         handleRemovePackagingProject={handleRemovePackagingProject}
         setActivePackagingProject={setActivePackagingProject}
         setActiveSession={setActiveSession}
@@ -1551,8 +2121,7 @@ export default function FormView({
                     right: 0,
                     maxHeight: '220px',
                     overflowY: 'auto',
-                    background: 'rgba(255, 255, 255, 0.98)',
-                    backdropFilter: 'blur(20px)',
+                    background: '#ffffff',
                     border: '2px solid rgba(37, 99, 235, 0.22) !important',
                     borderRadius: '16px',
                     boxShadow: '0 12px 32px rgba(15, 23, 42, 0.08)',
@@ -1560,18 +2129,14 @@ export default function FormView({
                     zIndex: 100
                   }}>
                     {activeActivities.filter(act =>
-                      act.po_info && act.po_info.trim() !== '' && (
+                      act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      act.brand.toLowerCase().includes(searchQuery.toLowerCase())
+                    ).length > 0 ? (
+                      activeActivities.filter(act =>
                         act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         act.brand.toLowerCase().includes(searchQuery.toLowerCase())
-                      )
-                    ).length > 0 ? (
-                      activeActivities.filter(act =>
-                        act.po_info && act.po_info.trim() !== '' && (
-                          act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          act.brand.toLowerCase().includes(searchQuery.toLowerCase())
-                        )
                       ).map((act, index) => (
                         <div
                           key={index}
@@ -1712,7 +2277,7 @@ export default function FormView({
     }
 
     const containerStyle: React.CSSProperties = {
-      position: 'absolute',
+      position: 'fixed',
       bottom: '1.5rem',
       left: '50%',
       transform: 'translateX(-50%)',
@@ -1730,7 +2295,7 @@ export default function FormView({
         {/* Expanded Chat History Panel */}
         {isChatExpanded && (
           <div
-            className="copilot-side-card"
+            className="kaizen-chat-popup-card"
             style={{
               pointerEvents: 'auto',
               width: '500px',
@@ -1739,8 +2304,7 @@ export default function FormView({
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
-              background: 'rgba(255, 255, 255, 0.95)',
-              backdropFilter: 'blur(20px)',
+              background: '#ffffff',
               border: '2px solid rgba(37, 99, 235, 0.28)',
               boxShadow: '0 12px 40px rgba(15, 23, 42, 0.15)',
               borderRadius: '24px',
@@ -1749,7 +2313,7 @@ export default function FormView({
               marginBottom: '0.2rem'
             }}
           >
-            <div className="flex-between kaizen-center-header" style={{ marginBottom: '1rem', borderBottom: '1.5px solid rgba(37, 99, 235, 0.12)', paddingBottom: '0.75rem', flexShrink: 0 }}>
+            <div className="flex-between kaizen-center-header" style={{ marginBottom: '1rem', borderBottom: '1.5px solid rgba(15, 23, 42, 0.08)', paddingBottom: '0.75rem', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span className="hud-logo-hexagon kaizen-logo-mini" style={{ width: '14px', height: '14px' }}></span>
                 <span className="kaizen-title-label" style={{ fontSize: '0.82rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -1759,7 +2323,12 @@ export default function FormView({
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <span className="electric-badge teal" style={{ fontSize: '0.58rem', padding: '0.1rem 0.4rem' }}>Online</span>
                 <button
-                  onClick={() => setIsChatExpanded(false)}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    setIsChatExpanded(false);
+                  }}
                   style={{
                     background: 'transparent',
                     border: 'none',
@@ -1815,7 +2384,7 @@ export default function FormView({
           </div>
         )}
 
-        {/* Input Capsule Bar (Always Visible) */}
+        {/* Input Capsule Bar (Always Visible, Toggle button replaced with visual Sparkle prefix) */}
         <div
           className="premium-chat-bar"
           style={{
@@ -1826,17 +2395,14 @@ export default function FormView({
             display: 'flex',
             alignItems: 'center',
             padding: '0.35rem 0.5rem 0.35rem 0.65rem',
-            background: 'rgba(255, 255, 255, 0.95)',
-            backdropFilter: 'blur(20px)',
-            border: '2px solid rgba(37, 99, 235, 0.28)',
+            background: '#ffffff',
+            border: '2px solid rgba(15, 23, 42, 0.22)',
             borderRadius: '99px',
             boxShadow: '0 8px 32px rgba(15, 23, 42, 0.08)'
           }}
         >
-          {/* Sparkle toggle button badge on the left */}
-          <button
-            type="button"
-            onClick={() => setIsChatExpanded(!isChatExpanded)}
+          {/* Sparkle badge on the left (Toggle button removed) */}
+          <div
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -1844,22 +2410,17 @@ export default function FormView({
               width: '28px',
               height: '28px',
               borderRadius: '50%',
-              background: isChatExpanded ? 'rgba(37, 99, 235, 0.15)' : 'rgba(37, 99, 235, 0.06)',
-              border: '1.5px solid rgba(37, 99, 235, 0.28)',
+              background: 'rgba(37, 99, 235, 0.06)',
+              border: '2px solid rgba(37, 99, 235, 0.28)',
               color: 'var(--royal-blue)',
-              cursor: 'pointer',
               marginRight: '0.45rem',
-              transition: 'all 0.15s ease',
-              outline: 'none',
               flexShrink: 0
             }}
-            title={isChatExpanded ? "Hide Chat History" : "Show Chat History"}
-            className="hover-scale"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
             </svg>
-          </button>
+          </div>
 
           {/* Chat input field */}
           <input
@@ -1867,7 +2428,10 @@ export default function FormView({
             className="premium-chat-input"
             placeholder={isListening ? "Listening..." : "Ask Kaizen to build..."}
             value={chatInput}
-            onChange={e => setChatInput(e.target.value)}
+            onChange={e => {
+              setChatInput(e.target.value);
+              if (!isChatExpanded) setIsChatExpanded(true);
+            }}
             onKeyDown={e => {
               if (e.key === 'Enter') {
                 handleSendChat();
@@ -1875,6 +2439,9 @@ export default function FormView({
               }
             }}
             onFocus={() => {
+              if (!isChatExpanded) setIsChatExpanded(true);
+            }}
+            onClick={() => {
               if (!isChatExpanded) setIsChatExpanded(true);
             }}
             disabled={isListening}
@@ -1895,7 +2462,10 @@ export default function FormView({
             <button
               type="button"
               className={`premium-mic-btn ${isListening ? 'listening-active' : ''}`}
-              onClick={toggleListening}
+              onClick={() => {
+                toggleListening();
+                if (!isChatExpanded) setIsChatExpanded(true);
+              }}
               title="Voice Command"
               style={{
                 display: 'flex',
@@ -1988,6 +2558,7 @@ export default function FormView({
         setActiveSession={setActiveSession}
         onMinimize={onMinimize}
         onClose={onClose}
+        onShowGuidelines={() => setShowGuidelinesModal(true)}
       />
 
       {/* Main split workspace layout */}
@@ -2136,13 +2707,34 @@ export default function FormView({
       {/* Hanging Collapsible Chat Widget */}
       {renderCollapsibleChat()}
 
+      {/* Collapsible Chat History Backdrop - Rendered at root to avoid z-index & nested scroll context issues */}
+      {!activePackagingProject && isChatExpanded && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            setIsChatExpanded(false);
+          }}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 998,
+            background: 'rgba(15, 23, 42, 0.15)',
+          }}
+        />
+      )}
+
+
+
       {/* Processing Loader Overlay */}
       {isProcessing && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(240, 251, 255, 0.65)',
-          backdropFilter: 'blur(5px)',
+          background: 'rgba(240, 251, 255, 0.85)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -2170,8 +2762,7 @@ export default function FormView({
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(15, 23, 42, 0.45)', // dark navy glass overlay
-          backdropFilter: 'blur(12px)',
+          background: 'rgba(15, 23, 42, 0.55)', // dark navy overlay
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -2283,6 +2874,190 @@ export default function FormView({
           </div>
         </div>
       )}
+      {/* Premium Bilingual Guidelines Modal */}
+      {showGuidelinesModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(15, 23, 42, 0.3)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1.5rem',
+        }}>
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.95)',
+            border: '2px solid rgba(37, 99, 235, 0.25)',
+            borderRadius: '24px',
+            width: '100%',
+            maxWidth: '780px',
+            maxHeight: '90vh',
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 24px 64px rgba(15, 23, 42, 0.15)',
+            overflow: 'hidden',
+            animation: 'modal-zoom-in 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '1.25rem 1.75rem',
+              borderBottom: '2px solid rgba(15, 23, 42, 0.08)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.03) 0%, rgba(239, 246, 255, 0.05) 100%)',
+            }}>
+              <div style={{ textAlign: 'left' }}>
+                <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 900, color: 'var(--deep-ocean)' }}>
+                  {guidelinesLanguage === 'en' ? 'User Guidelines & Manual' : 'Panduan & Petunjuk Pengguna'}
+                </h3>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                  {guidelinesLanguage === 'en' ? 'Chimera QC System Operational Scope' : 'Lingkup Operasional Sistem QC Chimera'}
+                </span>
+              </div>
+              
+              {/* Language Selection Tabs */}
+              <div style={{
+                display: 'flex',
+                background: 'rgba(15, 23, 42, 0.05)',
+                padding: '0.2rem',
+                borderRadius: '99px',
+                gap: '0.15rem',
+                flexShrink: 0
+              }}>
+                <button
+                  onClick={() => setGuidelinesLanguage('en')}
+                  style={{
+                    background: guidelinesLanguage === 'en' ? '#FFFFFF' : 'transparent',
+                    border: 'none',
+                    borderRadius: '99px',
+                    padding: '0.35rem 0.85rem',
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    color: guidelinesLanguage === 'en' ? 'var(--royal-blue)' : 'var(--text-muted)',
+                    cursor: 'pointer',
+                    boxShadow: guidelinesLanguage === 'en' ? '0 2px 6px rgba(0,0,0,0.05)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  English
+                </button>
+                <button
+                  onClick={() => setGuidelinesLanguage('id')}
+                  style={{
+                    background: guidelinesLanguage === 'id' ? '#FFFFFF' : 'transparent',
+                    border: 'none',
+                    borderRadius: '99px',
+                    padding: '0.35rem 0.85rem',
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    color: guidelinesLanguage === 'id' ? 'var(--royal-blue)' : 'var(--text-muted)',
+                    cursor: 'pointer',
+                    boxShadow: guidelinesLanguage === 'id' ? '0 2px 6px rgba(0,0,0,0.05)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  Bahasa
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Scroll Container */}
+            <div className="style-search-scroll" style={{
+              padding: '1.75rem',
+              overflowY: 'auto',
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.5rem',
+            }}>
+              {USER_GUIDELINES_SECTIONS.map((section, idx) => {
+                const title = guidelinesLanguage === 'en' ? section.titleEn : section.titleId;
+                const content = guidelinesLanguage === 'en' ? section.contentEn : section.contentId;
+                return (
+                  <div key={idx} style={{
+                    background: 'rgba(37, 99, 235, 0.015)',
+                    border: '1.5px solid rgba(37, 99, 235, 0.08)',
+                    borderRadius: '16px',
+                    padding: '1.15rem 1.35rem',
+                    textAlign: 'left'
+                  }}>
+                    <h4 style={{
+                      margin: '0 0 0.75rem 0',
+                      fontSize: '0.9rem',
+                      fontWeight: 800,
+                      color: 'var(--royal-blue)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem'
+                    }}>
+                      <span style={{
+                        width: '6px',
+                        height: '6px',
+                        borderRadius: '50%',
+                        background: 'var(--royal-blue)',
+                        display: 'inline-block'
+                      }} />
+                      {title}
+                    </h4>
+                    <ul style={{
+                      margin: 0,
+                      paddingLeft: '1.25rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.45rem',
+                      fontSize: '0.76rem',
+                      lineHeight: 1.5,
+                      color: 'var(--deep-ocean)',
+                      fontWeight: 500
+                    }}>
+                      {content.map((bullet, bIdx) => (
+                        <li key={bIdx}>{bullet}</li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Modal Footer */}
+            <div style={{
+              padding: '1.15rem 1.75rem',
+              borderTop: '2px solid rgba(15, 23, 42, 0.08)',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(239, 246, 255, 0.3) 100%)',
+            }}>
+              <button
+                onClick={() => setShowGuidelinesModal(false)}
+                className="btn-electric"
+                style={{
+                  width: 'auto',
+                  padding: '0.55rem 1.75rem',
+                  fontSize: '0.78rem',
+                  borderRadius: '12px',
+                  fontWeight: 800,
+                  background: 'var(--royal-blue)',
+                  color: 'white',
+                  border: 'none',
+                  boxShadow: '0 4px 12px rgba(37, 99, 235, 0.15)',
+                  cursor: 'pointer'
+                }}
+              >
+                {guidelinesLanguage === 'en' ? 'Close Guide' : 'Tutup Petunjuk'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <PrintReport
+        activePackagingProject={activePackagingProject}
+        activeSession={activeSession}
+        getCycleName={getCycleName}
+        tempDefectImages={tempDefectImages}
+      />
     </div>
   );
 }

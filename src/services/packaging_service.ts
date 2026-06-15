@@ -1,0 +1,344 @@
+import { invoke } from '@tauri-apps/api/core';
+
+export class PackagingService {
+  private static instance: PackagingService | null = null;
+  private STORAGE_KEY_PROJECTS = 'packaging_offline_projects';
+  private STORAGE_KEY_REMOVALS = 'packaging_offline_removals';
+  private STORAGE_KEY_REMOVED_PROJECTS = 'packaging_local_removed_projects';
+
+  private constructor() {}
+
+  public static getInstance(): PackagingService {
+    if (!PackagingService.instance) {
+      PackagingService.instance = new PackagingService();
+    }
+    return PackagingService.instance;
+  }
+
+  // --- PAYLOAD SANITIZATION HELPERS ---
+
+  private sanitizeProject(project: any): any {
+    if (!project) return project;
+    const p = { ...project };
+    if (p.brand === undefined || p.brand === null) {
+      p.brand = 'N/A';
+    }
+    if (p.season === undefined || p.season === null) {
+      p.season = 'N/A';
+    }
+    if (p.article_name === undefined || p.article_name === null) {
+      p.article_name = 'N/A';
+    }
+    if (p.production_group === undefined || p.production_group === null) {
+      p.production_group = 'N/A';
+    }
+    if (p.po_qty === '' || p.po_qty === null || p.po_qty === undefined) {
+      p.po_qty = null;
+    } else if (typeof p.po_qty === 'string') {
+      p.po_qty = parseFloat(p.po_qty) || null;
+    }
+    if (p.sales_price === '' || p.sales_price === null || p.sales_price === undefined) {
+      p.sales_price = null;
+    } else if (typeof p.sales_price === 'string') {
+      p.sales_price = parseFloat(p.sales_price) || null;
+    }
+    if (p.has_deduction === undefined || p.has_deduction === null) {
+      p.has_deduction = false;
+    }
+    if (p.deduction_amount === '' || p.deduction_amount === null || p.deduction_amount === undefined) {
+      p.deduction_amount = 0.0;
+    } else if (typeof p.deduction_amount === 'string') {
+      p.deduction_amount = parseFloat(p.deduction_amount) || 0.0;
+    }
+    return p;
+  }
+
+  private sanitizeSession(session: any): any {
+    if (!session) return session;
+    const s = { ...session };
+    const intFields = [
+      'cycle_number', 'qty_available', 'total_store', 'store_inspected',
+      'cutting_pcs', 'sewing_pcs', 'finishing_pcs', 'packing_pcs', 'sampling_pcs'
+    ];
+    const floatFields = ['aql', 'level_val'];
+    
+    intFields.forEach(f => {
+      if (s[f] === '' || s[f] === null || s[f] === undefined) {
+        s[f] = 0;
+      } else if (typeof s[f] === 'string') {
+        s[f] = parseInt(s[f], 10) || 0;
+      }
+    });
+
+    floatFields.forEach(f => {
+      if (s[f] === '' || s[f] === null || s[f] === undefined) {
+        s[f] = 0.0;
+      } else if (typeof s[f] === 'string') {
+        s[f] = parseFloat(s[f]) || 0.0;
+      }
+    });
+
+    if (s.check_other_1 === undefined || s.check_other_1 === null) {
+      s.check_other_1 = false;
+    }
+    if (s.check_other_2 === undefined || s.check_other_2 === null) {
+      s.check_other_2 = false;
+    }
+    if (s.check_other_1_label === undefined) {
+      s.check_other_1_label = '';
+    }
+    if (s.check_other_2_label === undefined) {
+      s.check_other_2_label = '';
+    }
+
+    if (s.report_lines && Array.isArray(s.report_lines)) {
+      s.report_lines = s.report_lines.map((line: any) => this.sanitizeReportLine(line));
+    }
+
+    return s;
+  }
+
+  private sanitizeReportLine(line: any): any {
+    if (!line) return line;
+    const l = { ...line };
+    const intFields = [
+      'line_no', 'global_display_order', 'reject_produksi', 'reject_finishing',
+      'reject_embro', 'qty_order', 'total_qty_sample', 'barang_hilang',
+      'reject_cutting', 'total_reject_qty', 'reject_printing', 'total_good_qty',
+      'reject_sewing', 'reject_washing', 'btj', 'reject_bahan'
+    ];
+    const floatFields = ['session_qty', 'gramasi'];
+
+    intFields.forEach(f => {
+      if (l[f] === '' || l[f] === null || l[f] === undefined) {
+        l[f] = null;
+      } else if (typeof l[f] === 'string') {
+        l[f] = parseInt(l[f], 10) || 0;
+      }
+    });
+
+    floatFields.forEach(f => {
+      if (l[f] === '' || l[f] === null || l[f] === undefined) {
+        l[f] = 0.0;
+      } else if (typeof l[f] === 'string') {
+        l[f] = parseFloat(l[f]) || 0.0;
+      }
+    });
+
+    return l;
+  }
+
+  private sanitizeDefectImage(image: any): any {
+    if (!image) return image;
+    const img = { ...image };
+    const intFields = ['major', 'minor'];
+    intFields.forEach(f => {
+      if (img[f] === '' || img[f] === null || img[f] === undefined) {
+        img[f] = 0;
+      } else if (typeof img[f] === 'string') {
+        img[f] = parseInt(img[f], 10) || 0;
+      }
+    });
+    return img;
+  }
+
+  // --- LOCAL STORAGE GETTERS/SETTERS ---
+
+  public getStoredProjects(): any[] {
+    if (typeof window === 'undefined') return [];
+    const stored = localStorage.getItem(this.STORAGE_KEY_PROJECTS);
+    return stored ? JSON.parse(stored) : [];
+  }
+
+  public saveStoredProjects(projects: any[]): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(this.STORAGE_KEY_PROJECTS, JSON.stringify(projects));
+  }
+
+  public getLocalRemovedProjects(): string[] {
+    if (typeof window === 'undefined') return [];
+    const stored = localStorage.getItem(this.STORAGE_KEY_REMOVED_PROJECTS);
+    return stored ? JSON.parse(stored) : [];
+  }
+
+  public saveLocalRemovedProjects(projectIds: string[]): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(this.STORAGE_KEY_REMOVED_PROJECTS, JSON.stringify(projectIds));
+  }
+
+  public getStoredRemovals(): string[] {
+    if (typeof window === 'undefined') return [];
+    const stored = localStorage.getItem(this.STORAGE_KEY_REMOVALS);
+    return stored ? JSON.parse(stored) : [];
+  }
+
+  public saveStoredRemovals(removals: string[]): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(this.STORAGE_KEY_REMOVALS, JSON.stringify(removals));
+  }
+
+  // --- CACHE MUTATIONS ---
+
+  public updateCacheMutation(cmd: string, args: Record<string, any>, synced: boolean): void {
+    if (cmd === 'save_packaging_project' && args.project) {
+      const projects = this.getStoredProjects();
+      const p = args.project;
+      const index = projects.findIndex(item => item.project_id === p.project_id);
+      const newProj = {
+        ...p,
+        synced,
+        base_report: p.base_report !== undefined ? p.base_report : (index >= 0 ? (projects[index].base_report || null) : null),
+        base_lines: p.base_lines !== undefined ? p.base_lines : (index >= 0 ? (projects[index].base_lines || []) : []),
+        sessions: p.sessions !== undefined ? p.sessions : (index >= 0 ? (projects[index].sessions || []) : []),
+        defect_images: p.defect_images !== undefined ? p.defect_images : (index >= 0 ? (projects[index].defect_images || []) : [])
+      };
+      if (index >= 0) {
+        projects[index] = { ...projects[index], ...newProj };
+      } else {
+        projects.push(newProj);
+      }
+      this.saveStoredProjects(projects);
+    }
+
+    if (cmd === 'save_packaging_base_report' && (args.base_report || args.baseReport)) {
+      const projects = this.getStoredProjects();
+      const br = args.base_report || args.baseReport;
+      const index = projects.findIndex(item => item.project_id === br.project_id);
+      if (index >= 0) {
+        projects[index].base_report = { ...br, synced };
+        projects[index].synced = synced;
+        this.saveStoredProjects(projects);
+      }
+    }
+
+    if (cmd === 'save_packaging_session' && args.session) {
+      const projects = this.getStoredProjects();
+      const ses = args.session;
+      const index = projects.findIndex(item => item.project_id === ses.project_id);
+      if (index >= 0) {
+        const sIndex = (projects[index].sessions || []).findIndex((s: any) => s.session_id === ses.session_id);
+        const newSession = { ...ses, synced };
+        if (sIndex >= 0) {
+          projects[index].sessions[sIndex] = { ...projects[index].sessions[sIndex], ...newSession };
+        } else {
+          if (!projects[index].sessions) projects[index].sessions = [];
+          projects[index].sessions.push(newSession);
+        }
+        projects[index].synced = synced;
+        this.saveStoredProjects(projects);
+      }
+    }
+
+    if (cmd === 'save_packaging_defect_image' && args.image) {
+      const projects = this.getStoredProjects();
+      const img = args.image;
+      const index = projects.findIndex(item => item.project_id === img.project_id);
+      if (index >= 0) {
+        if (!projects[index].defect_images) projects[index].defect_images = [];
+        const imgIndex = projects[index].defect_images.findIndex((d: any) => d.image_id === img.image_id);
+        const newImage = { ...img, synced };
+        if (imgIndex >= 0) {
+          projects[index].defect_images[imgIndex] = newImage;
+        } else {
+          projects[index].defect_images.push(newImage);
+        }
+        projects[index].synced = synced;
+        this.saveStoredProjects(projects);
+      }
+    }
+
+    if (cmd === 'save_packaging_project_reports' && args.reports) {
+      const projects = this.getStoredProjects();
+      const lines = args.reports;
+      if (lines.length > 0) {
+        const firstLine = lines[0];
+        const index = projects.findIndex(item => item.project_id === firstLine.project_id);
+        if (index >= 0) {
+          const sid = firstLine.session_id;
+          if (sid && sid !== 'INITIAL_PAK') {
+            const sIndex = (projects[index].sessions || []).findIndex((s: any) => s.session_id === sid);
+            if (sIndex >= 0) {
+              projects[index].sessions[sIndex].report_lines = lines.map((l: any) => ({ ...l, synced }));
+            }
+          } else {
+            projects[index].base_lines = lines.map((l: any) => ({ ...l, synced }));
+          }
+          projects[index].synced = synced;
+          this.saveStoredProjects(projects);
+        }
+      }
+    }
+
+    if (cmd === 'delete_packaging_project') {
+      const projects = this.getStoredProjects();
+      const pid = args.project_id || args.projectId;
+      const targetProj = projects.find(item => item.project_id === pid);
+      const filtered = projects.filter(item => item.project_id !== pid);
+      this.saveStoredProjects(filtered);
+
+      // If the deleted project was already synced to the server and we are offline, track it for future sync
+      if (!synced && targetProj && targetProj.synced !== false) {
+        const removals = this.getStoredRemovals();
+        if (!removals.includes(pid)) {
+          removals.push(pid);
+          this.saveStoredRemovals(removals);
+        }
+      }
+    }
+  }
+
+  // --- OFFLINE-RESILIENT TAURI WRAPPER ---
+
+  public async invokeSafe<T>(cmd: string, args: Record<string, any> = {}, fallback: T): Promise<T> {
+    // 1. Sanitize payload arguments before invocation to prevent Serde type errors on empty strings
+    const sanitizedArgs = { ...args };
+    if (sanitizedArgs.project) {
+      sanitizedArgs.project = this.sanitizeProject(sanitizedArgs.project);
+    }
+    if (sanitizedArgs.session) {
+      sanitizedArgs.session = this.sanitizeSession(sanitizedArgs.session);
+    }
+    if (sanitizedArgs.reports && Array.isArray(sanitizedArgs.reports)) {
+      sanitizedArgs.reports = sanitizedArgs.reports.map(r => this.sanitizeReportLine(r));
+    }
+    if (sanitizedArgs.image) {
+      sanitizedArgs.image = this.sanitizeDefectImage(sanitizedArgs.image);
+    }
+
+    try {
+      const res = await invoke<T>(cmd, sanitizedArgs);
+      // Cache successful queries
+      if (cmd === 'get_packaging_projects') {
+        this.saveStoredProjects(res as unknown as any[]);
+      } else if (cmd === 'get_packaging_project_reports' && (sanitizedArgs.session_id === 'INITIAL_PAK' || sanitizedArgs.sessionId === 'INITIAL_PAK')) {
+        const pid = sanitizedArgs.project_id || sanitizedArgs.projectId;
+        localStorage.setItem(`packaging_initial_reports_${pid}`, JSON.stringify(res));
+      } else {
+        this.updateCacheMutation(cmd, sanitizedArgs, true);
+      }
+      return res;
+    } catch (e: any) {
+      const errStr = String(e || '');
+      const isConnectionError = errStr.includes('Failed to connect') || errStr.includes('timeout') || errStr.includes('connection');
+      if (!isConnectionError && cmd !== 'get_packaging_projects' && cmd !== 'get_packaging_project_reports') {
+        console.error(`Tauri invoke '${cmd}' database execution error:`, e);
+        throw e;
+      }
+
+      console.warn(`Tauri invoke '${cmd}' failed or offline. Using local safety store fallback:`, e);
+
+      if (cmd === 'get_packaging_projects') {
+        return this.getStoredProjects() as unknown as T;
+      }
+
+      if (cmd === 'get_packaging_project_reports' && (sanitizedArgs.session_id === 'INITIAL_PAK' || sanitizedArgs.sessionId === 'INITIAL_PAK')) {
+        const pid = sanitizedArgs.project_id || sanitizedArgs.projectId;
+        const stored = localStorage.getItem(`packaging_initial_reports_${pid}`);
+        return (stored ? JSON.parse(stored) : fallback) as unknown as T;
+      }
+
+      this.updateCacheMutation(cmd, sanitizedArgs, false);
+      return fallback;
+    }
+  }
+}

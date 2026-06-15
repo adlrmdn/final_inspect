@@ -11,9 +11,7 @@ interface ProjectSelectionDirectoryProps {
   setSelectedActivity: (activity: any) => void;
   isDownloading: boolean;
   deletingProjectId: string | null;
-  isSyncing: boolean;
   handleDownloadProject: () => void;
-  handleSyncProject: (projectId: string) => void;
   handleRemovePackagingProject: (projectId: string) => void;
   setActivePackagingProject: (project: any) => void;
   setActiveSession: (session: any) => void;
@@ -22,6 +20,22 @@ interface ProjectSelectionDirectoryProps {
   showProfessionalAlert: (title: string, msg: string, type?: 'alert' | 'success' | 'danger') => Promise<any>;
   getCycleName: (cycleNum: number) => string;
 }
+
+const formatLastModified = (dateStr: string) => {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
+    const d = String(date.getDate()).padStart(2, '0');
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const y = date.getFullYear();
+    const hr = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `Last Modified: ${d}/${m}/${y} ${hr}:${min}`;
+  } catch {
+    return '';
+  }
+};
 
 export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps> = ({
   searchQuery,
@@ -34,9 +48,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
   setSelectedActivity,
   isDownloading,
   deletingProjectId,
-  isSyncing,
   handleDownloadProject,
-  handleSyncProject,
   handleRemovePackagingProject,
   setActivePackagingProject,
   setActiveSession,
@@ -121,7 +133,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
 
             {/* Action button to download */}
             <button
-              onClick={handleDownloadProject}
+              onClick={() => handleDownloadProject()}
               disabled={isDownloading}
               className="btn-electric-outline"
               style={{
@@ -214,8 +226,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                     right: 0,
                     maxHeight: '200px',
                     overflowY: 'auto',
-                    background: 'rgba(255, 255, 255, 0.98)',
-                    backdropFilter: 'blur(20px)',
+                    background: '#ffffff',
                     border: '2px solid rgba(37, 99, 235, 0.22) !important',
                     borderRadius: '16px',
                     boxShadow: '0 12px 32px rgba(15, 23, 42, 0.08)',
@@ -225,20 +236,16 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                 >
                   {activeActivities.filter(
                     (act) =>
-                      act.po_info &&
-                      act.po_info.trim() !== '' &&
-                      (act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        act.brand.toLowerCase().includes(searchQuery.toLowerCase()))
+                      act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      act.brand.toLowerCase().includes(searchQuery.toLowerCase())
                   ).length > 0 ? (
                     activeActivities
                       .filter(
                         (act) =>
-                          act.po_info &&
-                          act.po_info.trim() !== '' &&
-                          (act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            act.brand.toLowerCase().includes(searchQuery.toLowerCase()))
+                          act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          act.brand.toLowerCase().includes(searchQuery.toLowerCase())
                       )
                       .map((act, index) => {
                         const isDownloaded = packagingProjects.some((p: any) => p.plm_id === act.plm_id);
@@ -246,6 +253,15 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                           <div
                             key={index}
                             onClick={async () => {
+                              const isPoMissing = (act.production_type || '').toUpperCase() === 'CMT' && (!act.po_info || act.po_info.trim() === '');
+                              if (isPoMissing) {
+                                await showProfessionalAlert(
+                                  'PO Not Registered',
+                                  `The style '${act.article_name}' (${act.plm_id}) cannot be downloaded or configured because its CMT purchase order has not been registered yet.`,
+                                  'danger'
+                                );
+                                return;
+                              }
                               setIsDropdownOpen(false);
                               setSearchQuery('');
                               if (isDownloaded) {
@@ -262,15 +278,16 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                             style={{
                               padding: '0.65rem 0.85rem',
                               borderRadius: '10px',
-                              cursor: 'pointer',
+                              cursor: ((act.production_type || '').toUpperCase() === 'CMT' && (!act.po_info || act.po_info.trim() === '')) ? 'not-allowed' : 'pointer',
                               display: 'flex',
                               flexDirection: 'column',
                               alignItems: 'flex-start',
                               textAlign: 'left',
                               marginBottom: '0.25rem',
                               transition: 'all 0.15s ease',
+                              opacity: ((act.production_type || '').toUpperCase() === 'CMT' && (!act.po_info || act.po_info.trim() === '')) ? 0.6 : 1,
                               border: isDownloaded ? '1px dashed rgba(13, 148, 136, 0.4)' : '1px solid transparent',
-                              background: isDownloaded ? 'rgba(13, 148, 136, 0.02)' : '',
+                              background: isDownloaded ? 'rgba(13, 148, 136, 0.02)' : (((act.production_type || '').toUpperCase() === 'CMT' && (!act.po_info || act.po_info.trim() === '')) ? 'rgba(239, 68, 68, 0.02)' : ''),
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', width: '100%' }}>
@@ -289,7 +306,23 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               >
                                 {act.season}
                               </span>
-                              {isDownloaded && (
+                              {((act.production_type || '').toUpperCase() === 'CMT' && (!act.po_info || act.po_info.trim() === '')) ? (
+                                <span
+                                  className="electric-badge silver"
+                                  style={{
+                                    fontSize: '0.52rem',
+                                    padding: '0.05rem 0.35rem',
+                                    textTransform: 'uppercase',
+                                    height: 'auto',
+                                    lineHeight: '1.2',
+                                    border: '1px solid rgba(239,68,68,0.3)',
+                                    background: 'rgba(239,68,68,0.05)',
+                                    color: '#EF4444',
+                                  }}
+                                >
+                                  Locked: PO Pending
+                                </span>
+                              ) : isDownloaded && (
                                 <span
                                   className="electric-badge teal"
                                   style={{
@@ -308,9 +341,11 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               )}
                             </div>
 
-                            <div style={{ fontSize: '0.72rem', color: 'var(--royal-blue)', fontWeight: 800, marginTop: '0.2rem', textAlign: 'left' }}>
-                              {act.po_vendor}
-                            </div>
+                            {act.po_vendor && (
+                              <div style={{ fontSize: '0.72rem', color: 'var(--royal-blue)', fontWeight: 800, marginTop: '0.2rem', textAlign: 'left' }}>
+                                {act.po_vendor}
+                              </div>
+                            )}
 
                             <div
                               style={{
@@ -324,16 +359,20 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               }}
                             >
                               <span>
-                                PO: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_info}</strong>
+                                PO: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_info || ((act.production_type || '').toUpperCase() === 'CMT' ? 'Pending Registration' : 'In-house Production')}</strong>
                               </span>
-                              <span>•</span>
-                              <span>
-                                Qty: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_qty} units</strong>
-                              </span>
-                              <span>•</span>
-                              <span>
-                                Plan Date: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_plan_date}</strong>
-                              </span>
+                              {act.po_info && act.po_info.trim() !== '' && (
+                                <>
+                                  <span>•</span>
+                                  <span>
+                                    Qty: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_qty} units</strong>
+                                  </span>
+                                  <span>•</span>
+                                  <span>
+                                    Plan Date: <strong style={{ color: 'var(--deep-ocean)' }}>{act.po_plan_date}</strong>
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                         );
@@ -351,7 +390,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
       </div>
 
       {/* SECTION: DOWNLOADED PROJECTS DIRECTORY */}
-      <div style={{ borderTop: '1.5px solid rgba(37, 99, 235, 0.08)', paddingTop: '1rem', width: '100%', textAlign: 'left' }}>
+      <div style={{ borderTop: '2px solid rgba(15, 23, 42, 0.16)', paddingTop: '1rem', width: '100%', textAlign: 'left' }}>
         <h3 style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--deep-ocean)', marginBottom: '0.85rem' }}>
           Active Packaging Workspaces ({packagingProjects.length})
         </h3>
@@ -366,7 +405,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                   marginBottom: '0.5rem',
                   height: '95px',
                   background: 'rgba(37, 99, 235, 0.03)',
-                  border: '1.5px solid rgba(37, 99, 235, 0.06)',
+                  border: '2px solid rgba(15, 23, 42, 0.12)',
                   borderRadius: '16px',
                   padding: '0.85rem 1rem',
                   display: 'flex',
@@ -398,7 +437,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
               padding: '2.5rem 1.5rem',
               borderRadius: '16px',
               background: 'rgba(37, 99, 235, 0.02)',
-              border: '1.5px solid rgba(37, 99, 235, 0.08)',
+              border: '2px solid rgba(15, 23, 42, 0.16)',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -536,69 +575,105 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
-                      {isDeleting ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.72rem', color: '#EF4444', padding: '0.45rem 1rem' }}>
-                          <span
-                            style={{
-                              display: 'inline-block',
-                              width: '10px',
-                              height: '10px',
-                              borderRadius: '50%',
-                              border: '1.5px solid rgba(239, 68, 68, 0.2)',
-                              borderTopColor: '#EF4444',
-                              animation: 'spin-sync 1s linear infinite',
-                            }}
-                          />
-                          Removing...
-                        </div>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => handleSyncProject(proj.project_id)}
-                            disabled={proj.status !== 'completed' || isSyncing}
-                            className="btn-electric-outline"
-                            style={{
-                              width: 'auto',
-                              padding: '0.45rem 1rem',
-                              fontSize: '0.72rem',
-                              borderRadius: '10px',
-                              color: proj.status === 'completed' ? '#10B981' : 'var(--text-muted)',
-                              borderColor: proj.status === 'completed' ? 'rgba(16, 185, 129, 0.35)' : 'rgba(255, 255, 255, 0.1)',
-                              cursor: proj.status === 'completed' ? 'pointer' : 'not-allowed',
-                              background: proj.status === 'completed' ? 'rgba(16, 185, 129, 0.05)' : 'transparent',
-                              opacity: proj.status === 'completed' ? 1 : 0.5,
-                            }}
-                          >
-                            Sync
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              setActivePackagingProject(proj);
-                              const sessions = proj.sessions || [];
-                              const validSessions = sessions
-                                .filter((s: any) => s.cycle_number >= 1)
-                                .sort((a: any, b: any) => b.cycle_number - a.cycle_number);
-                              const latestSes = validSessions[0] || null;
-                              setActiveSession(latestSes);
-                              setSessionEditMode(false);
-                            }}
-                            className="btn-electric-outline"
-                            style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', background: 'rgba(37, 99, 235, 0.05)', borderRadius: '10px', cursor: 'pointer' }}
-                          >
-                            Open
-                          </button>
-
-                          <button
-                            onClick={() => handleRemovePackagingProject(proj.project_id)}
-                            className="btn-electric-outline"
-                            style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', color: '#EF4444', borderColor: 'rgba(239, 68, 68, 0.28)', borderRadius: '10px', cursor: 'pointer' }}
-                          >
-                            Remove
-                          </button>
-                        </>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.4rem', flexShrink: 0 }}>
+                      {proj.updated_at && (
+                        <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'monospace', opacity: 0.85 }}>
+                          {formatLastModified(proj.updated_at)}
+                        </span>
                       )}
+                      <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                        {isDeleting ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.72rem', color: '#EF4444', padding: '0.45rem 1rem' }}>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                width: '10px',
+                                height: '10px',
+                                borderRadius: '50%',
+                                border: '2px solid rgba(239, 68, 68, 0.2)',
+                                borderTopColor: '#EF4444',
+                                animation: 'spin-sync 1s linear infinite',
+                              }}
+                            />
+                            Removing...
+                          </div>
+                        ) : (
+                          <>
+                            {proj.status === 'completed' ? (
+                              <div
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '0.4rem',
+                                  fontSize: '0.72rem',
+                                  color: '#10B981',
+                                  fontWeight: 800,
+                                  paddingRight: '0.5rem',
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    display: 'inline-block',
+                                    width: '6px',
+                                    height: '6px',
+                                    borderRadius: '50%',
+                                    backgroundColor: '#10B981',
+                                  }}
+                                />
+                                Completed & Synced
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '0.4rem',
+                                  fontSize: '0.72rem',
+                                  color: 'var(--text-muted)',
+                                  fontWeight: 800,
+                                  paddingRight: '0.5rem',
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    display: 'inline-block',
+                                    width: '6px',
+                                    height: '6px',
+                                    borderRadius: '50%',
+                                    backgroundColor: 'var(--text-muted)',
+                                  }}
+                                />
+                                Draft
+                              </div>
+                            )}
+
+                            <button
+                              onClick={() => {
+                                setActivePackagingProject(proj);
+                                const sessions = proj.sessions || [];
+                                const validSessions = sessions
+                                  .filter((s: any) => s.cycle_number >= 1)
+                                  .sort((a: any, b: any) => b.cycle_number - a.cycle_number);
+                                const latestSes = validSessions[0] || null;
+                                setActiveSession(latestSes);
+                                setSessionEditMode(false);
+                              }}
+                              className="btn-electric-outline"
+                              style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', background: 'rgba(37, 99, 235, 0.05)', borderRadius: '10px', cursor: 'pointer' }}
+                            >
+                              Open
+                            </button>
+
+                            <button
+                              onClick={() => handleRemovePackagingProject(proj.project_id)}
+                              className="btn-electric-outline"
+                              style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', color: '#EF4444', borderColor: 'rgba(239, 68, 68, 0.28)', borderRadius: '10px', cursor: 'pointer' }}
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
