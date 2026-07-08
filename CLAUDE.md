@@ -34,7 +34,7 @@ No test runner or linter is configured. TypeScript strict mode (`noUnusedLocals`
 
 4. **Tauri Backend** (`src-tauri/`) — Rust backend shell connecting to PostgreSQL databases (VSM reference DB, QMS workspace DB, and RPA DB). Exposes Tauri commands for local SQLite and AWS PostgreSQL storage, Dynamics 365 OData synchronization, custom garment checklist placeholders, Universal RPA queue scheduling (invoice, deduction, and version-by-version chronological breakdowns), and `chat_logs` interaction logging.
 
-**Data flow:** Form submit → `DatabaseService.saveReport()` (draft) → `finalize()` (pending_sync) → `SyncEngine.synchronize()` (synced when online, queued when offline). Dynamics 365 Baselines are downloaded from ERP OData directly into QMS. Completed projects schedule RPA jobs in the `rpa_queue` table.
+**Data flow:** Form submit → `DatabaseService.saveReport()` (draft) → `finalize()` (pending_sync) → `SyncEngine.synchronize()` (synced when online, queued when offline). Dynamics 365 Baselines are downloaded from ERP OData directly into QMS. Completed projects schedule RPA jobs in the `rpa_queues` table.
 
 ## Key Patterns
 

@@ -31,6 +31,24 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
     }
   }, [activeSession, activeLineId]);
 
+  // Auto-fill cutting_pcs from base_lines total — runs once per session, never overwrites after that
+  const cuttingAutoFilledRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!activeSession || !activePackagingProject) return;
+    if (cuttingAutoFilledRef.current === activeSession.session_id) return;
+    if (activeSession.cutting_pcs && activeSession.cutting_pcs !== 0) {
+      cuttingAutoFilledRef.current = activeSession.session_id;
+      return;
+    }
+    const total = (activePackagingProject.base_lines || []).reduce(
+      (sum: number, l: any) => sum + (l.total_good_qty || 0), 0
+    );
+    if (total > 0) {
+      cuttingAutoFilledRef.current = activeSession.session_id;
+      setActiveSession((prev: any) => ({ ...prev, cutting_pcs: total }));
+    }
+  }, [activeSession?.session_id, activePackagingProject?.project_id]);
+
   // Sync state when parent size tab changes (e.g. from AI commands)
   React.useEffect(() => {
     if (selectedSizeTab && activeSession && activeSession.report_lines) {

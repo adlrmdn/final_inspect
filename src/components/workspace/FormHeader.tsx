@@ -3,9 +3,7 @@ import React from 'react';
 interface FormHeaderProps {
   activePackagingProject: any;
   activeSession: any;
-  template: { title: string } | null;
   getCycleName: (cycleNum: number) => string;
-  onBack: () => void;
   setActivePackagingProject: (proj: any) => void;
   setSessionEditMode: (mode: boolean) => void;
   setActiveSession: (session: any) => void;
@@ -17,9 +15,7 @@ interface FormHeaderProps {
 export const FormHeader: React.FC<FormHeaderProps> = ({
   activePackagingProject,
   activeSession,
-  template,
   getCycleName,
-  onBack,
   setActivePackagingProject,
   setSessionEditMode,
   setActiveSession,
@@ -40,80 +36,33 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, minWidth: 0 }}>
-        {/* Navigation/Close button */}
-        <button
-          type="button"
-          className="btn-electric-outline form-back-btn"
-          onClick={
-            activePackagingProject
-              ? () => {
-                  setActivePackagingProject(null);
-                  setSessionEditMode(false);
-                  setActiveSession(null);
-                }
-              : onBack
-          }
-          style={{ width: 'auto', padding: '0.45rem 1.25rem', marginLeft: '6px' }}
-        >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="3.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{
-              flexShrink: 0,
-              marginRight: '4px',
-              verticalAlign: 'middle',
-              display: 'inline-block',
-            }}
-          >
-            <line x1="19" y1="12" x2="5" y2="12" />
-            <polyline points="12 19 5 12 12 5" />
-          </svg>
-          {activePackagingProject ? 'Close Workspace' : 'Return to Hub'}
-        </button>
-
-        {onShowGuidelines && (
+        {/* Close button — only shown when a workspace is open; no hub to return to otherwise */}
+        {activePackagingProject && (
           <button
             type="button"
-            className="btn-electric-outline"
-            onClick={onShowGuidelines}
-            title={activePackagingProject ? "View Guidelines" : "Petunjuk Penggunaan"}
-            aria-label="View Guidelines"
-            style={{
-              width: '32px',
-              height: '32px',
-              padding: 0,
-              marginLeft: '6px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--royal-blue)',
-              borderColor: 'rgba(37, 99, 235, 0.35)',
-              background: 'rgba(37, 99, 235, 0.05)',
-              borderRadius: '50%',
-              cursor: 'pointer',
-              flexShrink: 0,
+            className="btn-electric-outline form-back-btn"
+            onClick={() => {
+              setActivePackagingProject(null);
+              setSessionEditMode(false);
+              setActiveSession(null);
             }}
+            style={{ width: 'auto', padding: '0.45rem 1.25rem', marginLeft: '6px' }}
           >
             <svg
-              width="14"
-              height="14"
+              width="13"
+              height="13"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="3.2"
+              strokeWidth="3.5"
               strokeLinecap="round"
               strokeLinejoin="round"
+              style={{ flexShrink: 0, marginRight: '4px', verticalAlign: 'middle', display: 'inline-block' }}
             >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="16" x2="12" y2="12" />
-              <line x1="12" y1="8" x2="12.01" y2="8" />
+              <line x1="19" y1="12" x2="5" y2="12" />
+              <polyline points="12 19 5 12 12 5" />
             </svg>
+            Close Workspace
           </button>
         )}
 
@@ -222,16 +171,48 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
             </>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
-              <span className="dashboard-system-label">Quality Control Schema</span>
+              <span className="dashboard-system-label">QC Console System</span>
               <h1 className="dashboard-title" style={{ fontSize: '1.45rem', marginTop: '0.15rem' }}>
-                {template ? template.title : ''}
+                FINAL INSPECTION
               </h1>
             </div>
           )}
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-        <div className="hud-window-controls hud-window-controls-bar" style={{ display: 'flex', gap: '0.35rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
+        <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', opacity: 0.75, fontFamily: 'monospace', lineHeight: '1' }}>
+          v1.1.0
+        </span>
+        <div className="hud-window-controls hud-window-controls-bar" style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+          {onShowGuidelines && (
+            <button
+              type="button"
+              className="btn-electric-outline"
+              onClick={onShowGuidelines}
+              aria-label="View Guidelines"
+              title="View Guidelines"
+              style={{
+                width: '32px',
+                height: '32px',
+                padding: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--royal-blue)',
+                borderColor: 'rgba(37, 99, 235, 0.35)',
+                background: 'rgba(37, 99, 235, 0.05)',
+                borderRadius: '50%',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+            </button>
+          )}
           <button className="hud-win-btn minimize" onClick={onMinimize} aria-label="Minimize" title="Minimize Window">
             <svg width="10" height="2" viewBox="0 0 10 2" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ opacity: 0.85 }}>
               <path d="M1 1H9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />

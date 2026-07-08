@@ -2,9 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 export class PackagingService {
   private static instance: PackagingService | null = null;
-  private STORAGE_KEY_PROJECTS = 'packaging_offline_projects';
   private STORAGE_KEY_REMOVALS = 'packaging_offline_removals';
-  private STORAGE_KEY_REMOVED_PROJECTS = 'packaging_local_removed_projects';
+  private cachedProjects: any[] = [];
 
   private constructor() {}
 
@@ -142,28 +141,30 @@ export class PackagingService {
     return img;
   }
 
-  // --- LOCAL STORAGE GETTERS/SETTERS ---
+  // --- DISK CACHE GETTERS/SETTERS ---
+
+  public async loadCacheFromDisk(): Promise<any[]> {
+    try {
+      const stored = await invoke<any[]>('read_offline_projects_cache');
+      this.cachedProjects = stored || [];
+      return this.cachedProjects;
+    } catch (e) {
+      console.error('Failed to load cache from disk:', e);
+      return [];
+    }
+  }
 
   public getStoredProjects(): any[] {
-    if (typeof window === 'undefined') return [];
-    const stored = localStorage.getItem(this.STORAGE_KEY_PROJECTS);
-    return stored ? JSON.parse(stored) : [];
+    return this.cachedProjects;
   }
 
-  public saveStoredProjects(projects: any[]): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(this.STORAGE_KEY_PROJECTS, JSON.stringify(projects));
-  }
-
-  public getLocalRemovedProjects(): string[] {
-    if (typeof window === 'undefined') return [];
-    const stored = localStorage.getItem(this.STORAGE_KEY_REMOVED_PROJECTS);
-    return stored ? JSON.parse(stored) : [];
-  }
-
-  public saveLocalRemovedProjects(projectIds: string[]): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(this.STORAGE_KEY_REMOVED_PROJECTS, JSON.stringify(projectIds));
+  public async saveStoredProjects(projects: any[]): Promise<void> {
+    this.cachedProjects = projects;
+    try {
+      await invoke('write_offline_projects_cache', { data: projects });
+    } catch (e) {
+      console.error('Failed to write projects cache to disk:', e);
+    }
   }
 
   public getStoredRemovals(): string[] {
@@ -179,7 +180,7 @@ export class PackagingService {
 
   // --- CACHE MUTATIONS ---
 
-  public updateCacheMutation(cmd: string, args: Record<string, any>, synced: boolean): void {
+  public async updateCacheMutation(cmd: string, args: Record<string, any>, synced: boolean): Promise<void> {
     if (cmd === 'save_packaging_project' && args.project) {
       const projects = this.getStoredProjects();
       const p = args.project;
@@ -197,18 +198,7 @@ export class PackagingService {
       } else {
         projects.push(newProj);
       }
-      this.saveStoredProjects(projects);
-    }
-
-    if (cmd === 'save_packaging_base_report' && (args.base_report || args.baseReport)) {
-      const projects = this.getStoredProjects();
-      const br = args.base_report || args.baseReport;
-      const index = projects.findIndex(item => item.project_id === br.project_id);
-      if (index >= 0) {
-        projects[index].base_report = { ...br, synced };
-        projects[index].synced = synced;
-        this.saveStoredProjects(projects);
-      }
+      await this.saveStoredProjects(projects);
     }
 
     if (cmd === 'save_packaging_session' && args.session) {
@@ -225,7 +215,7 @@ export class PackagingService {
           projects[index].sessions.push(newSession);
         }
         projects[index].synced = synced;
-        this.saveStoredProjects(projects);
+        await this.saveStoredProjects(projects);
       }
     }
 
@@ -243,7 +233,7 @@ export class PackagingService {
           projects[index].defect_images.push(newImage);
         }
         projects[index].synced = synced;
-        this.saveStoredProjects(projects);
+        await this.saveStoredProjects(projects);
       }
     }
 
@@ -264,7 +254,7 @@ export class PackagingService {
             projects[index].base_lines = lines.map((l: any) => ({ ...l, synced }));
           }
           projects[index].synced = synced;
-          this.saveStoredProjects(projects);
+          await this.saveStoredProjects(projects);
         }
       }
     }
@@ -274,7 +264,10 @@ export class PackagingService {
       const pid = args.project_id || args.projectId;
       const targetProj = projects.find(item => item.project_id === pid);
       const filtered = projects.filter(item => item.project_id !== pid);
-      this.saveStoredProjects(filtered);
+      await this.saveStoredProjects(filtered);
+      
+      // Clean up cached initial size report variations to free up storage space
+      localStorage.removeItem(`packaging_initial_reports_${pid}`);
 
       // If the deleted project was already synced to the server and we are offline, track it for future sync
       if (!synced && targetProj && targetProj.synced !== false) {
@@ -308,27 +301,57 @@ export class PackagingService {
     try {
       const res = await invoke<T>(cmd, sanitizedArgs);
       // Cache successful queries
-      if (cmd === 'get_packaging_projects') {
-        this.saveStoredProjects(res as unknown as any[]);
+      if (cmd === 'get_packaging_projects' || cmd === 'get_packaging_projects_summary') {
+        // Merge summary into existing detail cache.
+        // Block-list detail-only arrays so a future schema change on the Rust side
+        // can never silently wipe session/line data with a null from a summary row.
+        const DETAIL_ONLY_KEYS = new Set(['sessions', 'base_lines', 'report_lines', 'defect_images']);
+        const summaryList = res as unknown as any[];
+        const existing = this.getStoredProjects();
+        const merged = summaryList.map((s: any) => {
+          const prev = existing.find((e: any) => e.project_id === s.project_id);
+          if (!prev) return s;
+          const safeSummaryFields = Object.fromEntries(
+            Object.entries(s).filter(([k]) => !DETAIL_ONLY_KEYS.has(k))
+          );
+          return { ...prev, ...safeSummaryFields };
+        });
+        await this.saveStoredProjects(merged);
+      } else if (cmd === 'get_packaging_project_details') {
+        const detailProj = res as any;
+        const projects = this.getStoredProjects();
+        const index = projects.findIndex(item => item.project_id === detailProj.project_id);
+        if (index >= 0) {
+          projects[index] = { ...projects[index], ...detailProj };
+        } else {
+          projects.push(detailProj);
+        }
+        await this.saveStoredProjects(projects);
       } else if (cmd === 'get_packaging_project_reports' && (sanitizedArgs.session_id === 'INITIAL_PAK' || sanitizedArgs.sessionId === 'INITIAL_PAK')) {
         const pid = sanitizedArgs.project_id || sanitizedArgs.projectId;
         localStorage.setItem(`packaging_initial_reports_${pid}`, JSON.stringify(res));
       } else {
-        this.updateCacheMutation(cmd, sanitizedArgs, true);
+        await this.updateCacheMutation(cmd, sanitizedArgs, true);
       }
       return res;
     } catch (e: any) {
       const errStr = String(e || '');
       const isConnectionError = errStr.includes('Failed to connect') || errStr.includes('timeout') || errStr.includes('connection');
-      if (!isConnectionError && cmd !== 'get_packaging_projects' && cmd !== 'get_packaging_project_reports') {
+      if (!isConnectionError && cmd !== 'get_packaging_projects' && cmd !== 'get_packaging_projects_summary' && cmd !== 'get_packaging_project_details' && cmd !== 'get_packaging_project_reports') {
         console.error(`Tauri invoke '${cmd}' database execution error:`, e);
         throw e;
       }
 
       console.warn(`Tauri invoke '${cmd}' failed or offline. Using local safety store fallback:`, e);
 
-      if (cmd === 'get_packaging_projects') {
+      if (cmd === 'get_packaging_projects' || cmd === 'get_packaging_projects_summary') {
         return this.getStoredProjects() as unknown as T;
+      }
+
+      if (cmd === 'get_packaging_project_details') {
+        const pid = sanitizedArgs.project_id || sanitizedArgs.projectId;
+        const localDetails = this.getStoredProjects().find(p => p.project_id === pid);
+        return (localDetails || fallback) as unknown as T;
       }
 
       if (cmd === 'get_packaging_project_reports' && (sanitizedArgs.session_id === 'INITIAL_PAK' || sanitizedArgs.sessionId === 'INITIAL_PAK')) {
@@ -337,7 +360,7 @@ export class PackagingService {
         return (stored ? JSON.parse(stored) : fallback) as unknown as T;
       }
 
-      this.updateCacheMutation(cmd, sanitizedArgs, false);
+      await this.updateCacheMutation(cmd, sanitizedArgs, false);
       return fallback;
     }
   }

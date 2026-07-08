@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface ProjectSelectionDirectoryProps {
   searchQuery: string;
@@ -7,6 +7,7 @@ interface ProjectSelectionDirectoryProps {
   setIsDropdownOpen: (open: boolean) => void;
   activeActivities: any[];
   packagingProjects: any[];
+  deviceProjectIds: string[];
   selectedActivity: any;
   setSelectedActivity: (activity: any) => void;
   isDownloading: boolean;
@@ -14,8 +15,6 @@ interface ProjectSelectionDirectoryProps {
   handleDownloadProject: () => void;
   handleRemovePackagingProject: (projectId: string) => void;
   setActivePackagingProject: (project: any) => void;
-  setActiveSession: (session: any) => void;
-  setSessionEditMode: (edit: boolean) => void;
   isFetchingProjects: boolean;
   showProfessionalAlert: (title: string, msg: string, type?: 'alert' | 'success' | 'danger') => Promise<any>;
   getCycleName: (cycleNum: number) => string;
@@ -44,6 +43,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
   setIsDropdownOpen,
   activeActivities,
   packagingProjects,
+  deviceProjectIds,
   selectedActivity,
   setSelectedActivity,
   isDownloading,
@@ -51,12 +51,25 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
   handleDownloadProject,
   handleRemovePackagingProject,
   setActivePackagingProject,
-  setActiveSession,
-  setSessionEditMode,
   isFetchingProjects,
   showProfessionalAlert,
   getCycleName,
 }) => {
+  const [filterMode, setFilterMode] = useState<'device' | 'all'>('device');
+
+  const filteredProjects = React.useMemo(() => {
+    if (filterMode === 'device') {
+      return packagingProjects.filter((p: any) => deviceProjectIds.includes(p.project_id));
+    }
+    return packagingProjects;
+  }, [packagingProjects, deviceProjectIds, filterMode]);
+
+  const deviceCount = React.useMemo(() => {
+    return packagingProjects.filter((p: any) => deviceProjectIds.includes(p.project_id)).length;
+  }, [packagingProjects, deviceProjectIds]);
+
+  const allCount = packagingProjects.length;
+
   return (
     <div style={{ flex: 1, overflowY: 'auto', width: '100%', display: 'flex', flexDirection: 'column', zIndex: 2, position: 'relative', paddingRight: '0.75rem' }}>
       {/* UPPER DROPDOWN SELECTOR FOR STYLE PASSWORDS */}
@@ -90,6 +103,10 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                   >
                     {selectedActivity.season}
                   </span>
+                </div>
+
+                <div style={{ fontSize: '0.72rem', color: 'var(--royal-blue)', fontFamily: 'monospace', marginTop: '0.1rem' }}>
+                  PRG: <strong>{selectedActivity.production_group}</strong> {selectedActivity.plm_id && selectedActivity.plm_id !== 'N/A' && `• PLM: ${selectedActivity.plm_id}`}
                 </div>
 
                 {selectedActivity.po_vendor && (
@@ -238,17 +255,19 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                     (act) =>
                       act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
                       act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      act.brand.toLowerCase().includes(searchQuery.toLowerCase())
+                      act.brand.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      (act.production_group || '').toLowerCase().includes(searchQuery.toLowerCase())
                   ).length > 0 ? (
                     activeActivities
                       .filter(
                         (act) =>
                           act.plm_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           act.article_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          act.brand.toLowerCase().includes(searchQuery.toLowerCase())
+                          act.brand.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (act.production_group || '').toLowerCase().includes(searchQuery.toLowerCase())
                       )
                       .map((act, index) => {
-                        const isDownloaded = packagingProjects.some((p: any) => p.plm_id === act.plm_id);
+                        const isDownloaded = packagingProjects.some((p: any) => p.production_group === act.production_group);
                         return (
                           <div
                             key={index}
@@ -257,7 +276,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               if (isPoMissing) {
                                 await showProfessionalAlert(
                                   'PO Not Registered',
-                                  `The style '${act.article_name}' (${act.plm_id}) cannot be downloaded or configured because its CMT purchase order has not been registered yet.`,
+                                  `The style '${act.article_name}' (${act.production_group}) cannot be downloaded or configured because its CMT purchase order has not been registered yet.`,
                                   'danger'
                                 );
                                 return;
@@ -267,7 +286,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               if (isDownloaded) {
                                 await showProfessionalAlert(
                                   'Style Already Active',
-                                  `The style '${act.article_name}' (${act.plm_id}) is already active in your directory. To inspect this style, please open it from the Active Packaging Projects list below.`,
+                                  `The style '${act.article_name}' (${act.production_group}) is already active in your directory. To inspect this style, please open it from the Active Inspection Workspaces list below.`,
                                   'alert'
                                 );
                               } else {
@@ -341,6 +360,10 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               )}
                             </div>
 
+                            <div style={{ fontSize: '0.68rem', color: 'var(--royal-blue)', fontFamily: 'monospace', marginTop: '0.1rem', textAlign: 'left' }}>
+                              PRG: <strong>{act.production_group}</strong> {act.plm_id && act.plm_id !== 'N/A' && `• PLM: ${act.plm_id}`}
+                            </div>
+
                             {act.po_vendor && (
                               <div style={{ fontSize: '0.72rem', color: 'var(--royal-blue)', fontWeight: 800, marginTop: '0.2rem', textAlign: 'left' }}>
                                 {act.po_vendor}
@@ -391,9 +414,55 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
 
       {/* SECTION: DOWNLOADED PROJECTS DIRECTORY */}
       <div style={{ borderTop: '2px solid rgba(15, 23, 42, 0.16)', paddingTop: '1rem', width: '100%', textAlign: 'left' }}>
-        <h3 style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--deep-ocean)', marginBottom: '0.85rem' }}>
-          Active Packaging Workspaces ({packagingProjects.length})
-        </h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', width: '100%', gap: '1rem', flexWrap: 'wrap' }}>
+          <h3 style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--deep-ocean)', margin: 0 }}>
+            Active Inspection Workspaces ({filteredProjects.length})
+          </h3>
+
+          {/* Glassmorphic Tab Selector */}
+          <div style={{
+            display: 'flex',
+            background: 'rgba(15, 23, 42, 0.04)',
+            borderRadius: '99px',
+            padding: '2px',
+            border: '1.5px solid rgba(15, 23, 42, 0.08)',
+          }}>
+            <button
+              onClick={() => setFilterMode('device')}
+              style={{
+                border: 'none',
+                background: filterMode === 'device' ? '#FFFFFF' : 'transparent',
+                color: filterMode === 'device' ? 'var(--royal-blue)' : 'var(--text-muted)',
+                fontWeight: filterMode === 'device' ? 800 : 600,
+                fontSize: '0.7rem',
+                padding: '0.35rem 0.85rem',
+                borderRadius: '99px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: filterMode === 'device' ? '0 2px 6px rgba(0, 0, 0, 0.05)' : 'none',
+              }}
+            >
+              My Device ({deviceCount})
+            </button>
+            <button
+              onClick={() => setFilterMode('all')}
+              style={{
+                border: 'none',
+                background: filterMode === 'all' ? '#FFFFFF' : 'transparent',
+                color: filterMode === 'all' ? 'var(--royal-blue)' : 'var(--text-muted)',
+                fontWeight: filterMode === 'all' ? 800 : 600,
+                fontSize: '0.7rem',
+                padding: '0.35rem 0.85rem',
+                borderRadius: '99px',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: filterMode === 'all' ? '0 2px 6px rgba(0, 0, 0, 0.05)' : 'none',
+              }}
+            >
+              All Devices ({allCount})
+            </button>
+          </div>
+        </div>
 
         {isFetchingProjects ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.85rem' }}>
@@ -431,37 +500,81 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
               </div>
             ))}
           </div>
-        ) : packagingProjects.length === 0 ? (
-          <div
-            style={{
-              padding: '2.5rem 1.5rem',
-              borderRadius: '16px',
-              background: 'rgba(37, 99, 235, 0.02)',
-              border: '2px solid rgba(15, 23, 42, 0.16)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.85rem',
-              textAlign: 'center',
-              margin: '1.5rem 0',
-              width: '100%',
-              boxSizing: 'border-box',
-            }}
-          >
-            <div style={{ maxWidth: '360px' }}>
-              <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--deep-ocean)', display: 'block', marginBottom: '0.25rem' }}>
-                No Active Packaging Workspace
-              </span>
-              <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.45 }}>
-                Search and select a PLM style from the dropdown above to download it and start logging iterative QC inspection sessions.
-              </p>
+        ) : filteredProjects.length === 0 ? (
+          filterMode === 'device' ? (
+            <div
+              style={{
+                padding: '2.5rem 1.5rem',
+                borderRadius: '16px',
+                background: 'rgba(37, 99, 235, 0.02)',
+                border: '2px solid rgba(15, 23, 42, 0.16)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.85rem',
+                textAlign: 'center',
+                margin: '1.5rem 0',
+                width: '100%',
+                boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ maxWidth: '360px' }}>
+                <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--deep-ocean)', display: 'block', marginBottom: '0.25rem' }}>
+                  No Workspace on This Device
+                </span>
+                <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', margin: '0 0 1rem 0', lineHeight: 1.45 }}>
+                  You haven't started or adopted any active workspaces on this device yet.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode('all')}
+                  className="btn-electric-outline"
+                  style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', background: 'rgba(37, 99, 235, 0.05)', borderRadius: '10px', cursor: 'pointer' }}
+                >
+                  View All Devices ({allCount})
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div
+              style={{
+                padding: '2.5rem 1.5rem',
+                borderRadius: '16px',
+                background: 'rgba(37, 99, 235, 0.02)',
+                border: '2px solid rgba(15, 23, 42, 0.16)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.85rem',
+                textAlign: 'center',
+                margin: '1.5rem 0',
+                width: '100%',
+                boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ maxWidth: '360px' }}>
+                <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--deep-ocean)', display: 'block', marginBottom: '0.25rem' }}>
+                  No Active Inspection Workspace
+                </span>
+                <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.45 }}>
+                  Search and select a PLM style from the dropdown above to download it and start logging iterative QC inspection sessions.
+                </p>
+              </div>
+            </div>
+          )
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.85rem' }}>
-            {packagingProjects.map((proj: any) => {
+            {filteredProjects.map((proj: any) => {
               const isDeleting = deletingProjectId === proj.project_id;
+              const latestSession =
+                proj.sessions && proj.sessions.length > 0
+                  ? [...proj.sessions].sort((a: any, b: any) => b.cycle_number - a.cycle_number)[0]
+                  : null;
+              const versionText = latestSession
+                ? `VERSION: ${getCycleName(latestSession.cycle_number).toUpperCase()}`
+                : 'NO VERSION INITIALIZED';
 
               return (
                 <div
@@ -476,7 +589,7 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div style={{ textAlign: 'left', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                      {/* First line: Article Name + Season & Version Badges */}
+                      {/* First line: Article Name + Season Badge */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                         <h4 style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--deep-ocean)', margin: 0 }}>{proj.article_name}</h4>
                         <span
@@ -493,32 +606,6 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                         >
                           {proj.season}
                         </span>
-                        {(() => {
-                          const latestSession =
-                            proj.sessions && proj.sessions.length > 0
-                              ? [...proj.sessions].sort((a: any, b: any) => b.cycle_number - a.cycle_number)[0]
-                              : null;
-                          const versionText = latestSession
-                            ? `VERSION: ${getCycleName(latestSession.cycle_number).toUpperCase()}`
-                            : 'NO VERSION INITIALIZED';
-                          return (
-                            <span
-                              className="electric-badge teal"
-                              style={{
-                                fontSize: '0.56rem',
-                                height: '18px',
-                                padding: '0 0.5rem',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                lineHeight: 'normal',
-                                fontWeight: 800,
-                              }}
-                            >
-                              {versionText}
-                            </span>
-                          );
-                        })()}
                       </div>
 
                       {/* Second line: Vendor Name */}
@@ -576,6 +663,21 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.4rem', flexShrink: 0 }}>
+                      <span
+                        className="electric-badge teal"
+                        style={{
+                          fontSize: '0.52rem',
+                          height: '16px',
+                          padding: '0 0.45rem',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          lineHeight: 'normal',
+                          fontWeight: 800,
+                        }}
+                      >
+                        {versionText}
+                      </span>
                       {proj.updated_at && (
                         <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', fontFamily: 'monospace', opacity: 0.85 }}>
                           {formatLastModified(proj.updated_at)}
@@ -650,13 +752,6 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                             <button
                               onClick={() => {
                                 setActivePackagingProject(proj);
-                                const sessions = proj.sessions || [];
-                                const validSessions = sessions
-                                  .filter((s: any) => s.cycle_number >= 1)
-                                  .sort((a: any, b: any) => b.cycle_number - a.cycle_number);
-                                const latestSes = validSessions[0] || null;
-                                setActiveSession(latestSes);
-                                setSessionEditMode(false);
                               }}
                               className="btn-electric-outline"
                               style={{ width: 'auto', padding: '0.45rem 1rem', fontSize: '0.72rem', background: 'rgba(37, 99, 235, 0.05)', borderRadius: '10px', cursor: 'pointer' }}

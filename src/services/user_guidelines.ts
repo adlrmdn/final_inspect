@@ -63,7 +63,7 @@ export const USER_GUIDELINES_SECTIONS: GuidelineSection[] = [
     ]
   },
   {
-    titleEn: "5. Save Sesi & Next Cycle",
+    titleEn: "5. Save Session & Next Cycle",
     titleId: "5. Simpan Sesi & Siklus Baru",
     contentEn: [
       "Click 'Save Version' at the top to save your progress and lock inputs to prevent accidental changes.",
@@ -78,14 +78,18 @@ export const USER_GUIDELINES_SECTIONS: GuidelineSection[] = [
     titleEn: "6. Verify, Complete, & Sync",
     titleId: "6. Verifikasi, Selesai, & Sinkronkan",
     contentEn: [
-      "Upload a photo of the signed off-hand inspection sheet and click 'Verify' to mark the project verified (mandatory).",
-      "Click the 'Complete & Sync' button (requires online mode) to lock the workspace, upload all inspection sessions, and automatically schedule RPA invoice and deduction tasks.",
-      "If a correction is needed, click 'Revert' (requires online mode) to restore the project back to Draft status and automatically delete any pending RPA tasks."
+      "Click 'Verify' to open the approval dialog. Enter the approver's email address and click Send — the system will email the inspection report PDF to the approver for digital signature review.",
+      "All sessions in the project are locked for editing while any version is awaiting approval. The 'Confirmed By' and 'Approved By' boxes show 'Awaiting Approval' until signed.",
+      "If the approver rejects the request, click 'Re-verify' to clear the rejection and send a new approval email.",
+      "Once the approver signs digitally, the session status updates to Verified. Click 'Complete & Sync' (requires online) to lock the workspace, upload all sessions, and auto-schedule RPA invoice and deduction tasks.",
+      "If a correction is needed after completing, click 'Revert' (requires online) to restore the project to Draft and delete any pending RPA queue tasks."
     ],
     contentId: [
-      "Unggah foto lembar inspeksi yang ditandatangani dan klik 'Verify' untuk menandai proyek terverifikasi (wajib).",
-      "Klik tombol 'Complete & Sync' (memerlukan internet) untuk mengunci ruang kerja, mengunggah seluruh laporan sesi, dan menjadwalkan tugas RPA untuk invoice dan potongan secara otomatis.",
-      "Jika perlu koreksi, klik 'Revert' (memerlukan internet) untuk mengembalikan status proyek ke Draf dan secara otomatis menghapus tugas antrean RPA yang tertunda."
+      "Klik 'Verify' untuk membuka dialog persetujuan. Masukkan email penyetuju dan klik Kirim — sistem akan mengirim email laporan PDF inspeksi ke penyetuju untuk ditandatangani secara digital.",
+      "Seluruh sesi dalam proyek terkunci saat ada versi yang sedang menunggu persetujuan. Kolom 'Confirmed By' dan 'Approved By' menampilkan 'Awaiting Approval' hingga ditandatangani.",
+      "Jika penyetuju menolak permintaan, klik 'Re-verify' untuk membersihkan penolakan dan mengirim ulang email persetujuan.",
+      "Setelah penyetuju menandatangani secara digital, status sesi berubah menjadi Verified. Klik 'Complete & Sync' (memerlukan internet) untuk mengunci ruang kerja, mengunggah seluruh sesi, dan menjadwalkan tugas RPA secara otomatis.",
+      "Jika diperlukan koreksi setelah selesai, klik 'Revert' (memerlukan internet) untuk mengembalikan proyek ke status Draf dan menghapus tugas antrean RPA yang tertunda."
     ]
   },
   {
@@ -122,8 +126,8 @@ Quality Control System (QCS) User Guidelines & Workflow:
 - Log Defects: Attach defect photo, enter description, grade Major/Minor.
 - Save: Click Save Version to save session.
 - Move Version: Click Move Version to clone inspector and quantities to next cycle (e.g. Version 2.0).
-- Verify: Upload signed document and click Verify.
-- Complete & Sync: Click Complete & Sync to lock workspace, sync all data, and queue RPA invoicing & deduction jobs.
+- Verify: Click Verify, enter approver email, system sends PDF report for digital signature. All sessions lock while awaiting approval. Re-verify clears a rejection and resends.
+- Complete & Sync: After digital approval, click Complete & Sync to lock workspace, sync all data, and queue RPA invoicing & deduction jobs.
 - Revert: Click Revert to unlock a completed project back to draft and delete any pending RPA tasks.
 - Assistant Commands (Multi-task checklist enabled): 'check wash waist tag shipping', 'set size S quantity to 50', 'log defect sewing desc loose thread major 1', 'edit version', 'save session', 'complete project'.
 `;

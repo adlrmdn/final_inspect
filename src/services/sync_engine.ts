@@ -1,4 +1,5 @@
 import { DatabaseService } from './database_service';
+import { PackagingService } from './packaging_service';
 
 export type SyncListener = (pendingCount: number, isSyncing: boolean) => void;
 
@@ -56,35 +57,25 @@ export class SyncEngine {
     
     let count = 0;
 
-    // Count unsynced items
-    const stored = localStorage.getItem('packaging_offline_projects');
-    if (stored) {
-      try {
-        const projects = JSON.parse(stored);
-        for (const p of projects) {
-          if (p.synced === false) count++;
-          if (p.sessions) {
-            for (const s of p.sessions) {
-              if (s.synced === false) count++;
-            }
-          }
-          if (p.defect_images) {
-            for (const img of p.defect_images) {
-              if (img.synced === false) count++;
-            }
-          }
+    // Count unsynced items from PackagingService memory cache (backed by local JSON cache)
+    const projects = PackagingService.getInstance().getStoredProjects();
+    for (const p of projects) {
+      if (p.synced === false) count++;
+      if (p.sessions) {
+        for (const s of p.sessions) {
+          if (s.synced === false) count++;
         }
-      } catch {}
+      }
+      if (p.defect_images) {
+        for (const img of p.defect_images) {
+          if (img.synced === false) count++;
+        }
+      }
     }
 
     // Count pending removals
-    const storedRemovals = localStorage.getItem('packaging_offline_removals');
-    if (storedRemovals) {
-      try {
-        const removals = JSON.parse(storedRemovals);
-        count += removals.length;
-      } catch {}
-    }
+    const removals = PackagingService.getInstance().getStoredRemovals();
+    count += removals.length;
 
     return count;
   }
@@ -144,87 +135,78 @@ export class SyncEngine {
       }
 
       // 2. Sync offline packaging projects & sessions
-      if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('packaging_offline_projects');
-        if (stored) {
-          const projects = JSON.parse(stored);
-          let changed = false;
+      const projects = [...PackagingService.getInstance().getStoredProjects()];
 
-          for (const p of projects) {
-            // Sync project header
-            if (p.synced === false) {
-              await new Promise(resolve => setTimeout(resolve, 300));
-              const { base_lines, sessions, defect_images, synced, ...rest } = p;
-              await invoke('save_packaging_project', { project: rest });
-              p.synced = true;
-              changed = true;
-              this.notifyListeners();
-            }
+      for (const p of projects) {
+        // Sync project header
+        if (p.synced === false) {
+          try {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const { base_lines, sessions, defect_images, synced, ...rest } = p;
+            await invoke('save_packaging_project', { project: rest });
+            p.synced = true;
+            await PackagingService.getInstance().saveStoredProjects(projects);
+            this.notifyListeners();
+          } catch (e) {
+            console.error(`Failed to sync project ${p.project_id}:`, e);
+          }
+        }
 
-            // Sync sessions
-            if (p.sessions) {
-              for (const s of p.sessions) {
-                if (s.synced === false) {
-                  await new Promise(resolve => setTimeout(resolve, 300));
-                  const { report_lines, synced, ...rest } = s;
-                  await invoke('save_packaging_session', { session: rest });
-                  
-                  if (report_lines && report_lines.length > 0) {
-                    await invoke('save_packaging_project_reports', { reports: report_lines });
-                  }
-                  
-                  s.synced = true;
-                  changed = true;
-                  this.notifyListeners();
+        // Sync sessions
+        if (p.sessions) {
+          for (const s of p.sessions) {
+            if (s.synced === false) {
+              try {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const { report_lines, synced, ...rest } = s;
+                await invoke('save_packaging_session', { session: rest });
+                if (report_lines && report_lines.length > 0) {
+                  await invoke('save_packaging_project_reports', { reports: report_lines });
                 }
-              }
-            }
-
-            // Sync defect images
-            if (p.defect_images) {
-              for (const img of p.defect_images) {
-                if (img.synced === false) {
-                  await new Promise(resolve => setTimeout(resolve, 300));
-                  const { synced, ...rest } = img;
-                  await invoke('save_packaging_defect_image', { image: rest });
-                  img.synced = true;
-                  changed = true;
-                  this.notifyListeners();
-                }
+                s.synced = true;
+                await PackagingService.getInstance().saveStoredProjects(projects);
+                this.notifyListeners();
+              } catch (e) {
+                console.error(`Failed to sync session ${s.session_id}:`, e);
               }
             }
           }
+        }
 
-          if (changed) {
-            localStorage.setItem('packaging_offline_projects', JSON.stringify(projects));
+        // Sync defect images
+        if (p.defect_images) {
+          for (const img of p.defect_images) {
+            if (img.synced === false) {
+              try {
+                await new Promise(resolve => setTimeout(resolve, 300));
+                const { synced, ...rest } = img;
+                await invoke('save_packaging_defect_image', { image: rest });
+                img.synced = true;
+                await PackagingService.getInstance().saveStoredProjects(projects);
+                this.notifyListeners();
+              } catch (e) {
+                console.error(`Failed to sync defect image ${img.image_id}:`, e);
+              }
+            }
           }
         }
       }
 
       // 3. Sync offline packaging project removals
-      if (typeof window !== 'undefined') {
-        const storedRemovals = localStorage.getItem('packaging_offline_removals');
-        if (storedRemovals) {
-          const removals: string[] = JSON.parse(storedRemovals);
-          if (removals.length > 0) {
-            const remainingRemovals: string[] = [];
-            for (const pid of removals) {
-              try {
-                await new Promise(resolve => setTimeout(resolve, 300));
-                await invoke('delete_packaging_project', { projectId: pid });
-              } catch (e) {
-                console.error(`Failed to sync offline deletion for project ${pid}:`, e);
-                remainingRemovals.push(pid);
-              }
-            }
-            if (remainingRemovals.length > 0) {
-              localStorage.setItem('packaging_offline_removals', JSON.stringify(remainingRemovals));
-            } else {
-              localStorage.removeItem('packaging_offline_removals');
-            }
-            this.notifyListeners();
+      const removals = PackagingService.getInstance().getStoredRemovals();
+      if (removals.length > 0) {
+        const remainingRemovals: string[] = [];
+        for (const pid of removals) {
+          try {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            await invoke('delete_packaging_project', { projectId: pid });
+          } catch (e) {
+            console.error(`Failed to sync offline deletion for project ${pid}:`, e);
+            remainingRemovals.push(pid);
           }
         }
+        PackagingService.getInstance().saveStoredRemovals(remainingRemovals);
+        this.notifyListeners();
       }
     } finally {
       this.isSyncing = false;

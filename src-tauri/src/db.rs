@@ -2,10 +2,18 @@ use postgres::{Client, NoTls};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use chrono::NaiveDateTime;
+use tauri::{AppHandle, Manager};
+use std::sync::OnceLock;
+
+static DB_INIT: OnceLock<()> = OnceLock::new();
+
+fn ensure_init() {
+    DB_INIT.get_or_init(|| { let _ = init_tables(); });
+}
 
 // PostgreSQL Database Connection URL configurations
 const VSM_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/vsm";
-const QMS_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/qms";
+pub(crate) const QMS_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/qms";
 const POSTGRES_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/postgres";
 const RPA_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/rpa";
 
@@ -240,6 +248,9 @@ pub struct PackagingProjectSession {
     pub version: Option<String>,
     #[serde(default)]
     pub result: Option<String>,
+    // Optimistic concurrency version — incremented on every successful save
+    #[serde(default)]
+    pub row_version: Option<i32>,
 }
 
 // Struct representing a Packaging Defect Image
@@ -344,9 +355,9 @@ fn get_connection_rpa() -> Result<Client, String> {
 pub fn init_rpa_tables() -> Result<(), String> {
     let mut client = get_connection_rpa()?;
     
-    // Create rpa_queue table in RPA DB
+    // Create rpa_queues table in RPA DB
     client.execute(
-        "CREATE TABLE IF NOT EXISTS rpa_queue (
+        "CREATE TABLE IF NOT EXISTS rpa_queues (
             id SERIAL PRIMARY KEY,
             entity_type VARCHAR(100) NOT NULL,
             entity_id VARCHAR(100) NOT NULL,
@@ -359,13 +370,13 @@ pub fn init_rpa_tables() -> Result<(), String> {
             updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         )",
         &[],
-    ).map_err(|e| format!("Failed to create rpa_queue table in RPA DB: {}", e))?;
+    ).map_err(|e| format!("Failed to create rpa_queues table in RPA DB: {}", e))?;
 
     // Create index for fast polling
     client.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rpa_queue_polling ON rpa_queue(status, rpa_type)",
+        "CREATE INDEX IF NOT EXISTS idx_rpa_queues_polling ON rpa_queues(status, rpa_type)",
         &[],
-    ).map_err(|e| format!("Failed to create idx_rpa_queue_polling index: {}", e))?;
+    ).map_err(|e| format!("Failed to create idx_rpa_queues_polling index: {}", e))?;
 
     Ok(())
 }
@@ -518,6 +529,95 @@ pub fn init_tables() -> Result<(), String> {
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS check_other_1_label VARCHAR(255)", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS check_other_2 BOOLEAN NOT NULL DEFAULT FALSE", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS check_other_2_label VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approved_by VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_source VARCHAR(255) DEFAULT 'web_portal'", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_token UUID", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_email VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_signature VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS ho_approval_signature VARCHAR(255)", &[]);
+    // Optimistic concurrency lock — incremented on every save; 0/NULL clients bypass the check
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1", &[]);
+
+    // Real-time LISTEN/NOTIFY infrastructure — fires whenever any writer (console or portal) changes a session or fabric row
+    let _ = client.execute(
+        "CREATE OR REPLACE FUNCTION notify_qms_update() RETURNS trigger AS $fn$
+         BEGIN
+           PERFORM pg_notify('qms_updates', json_build_object(
+             'table',      TG_TABLE_NAME,
+             'project_id', COALESCE(NEW.project_id::text, '')
+           )::text);
+           RETURN NEW;
+         END;
+         $fn$ LANGUAGE plpgsql",
+        &[],
+    );
+    let _ = client.execute("DROP TRIGGER IF EXISTS trg_qms_notify_sessions ON packaging_project_sessions", &[]);
+    let _ = client.execute(
+        "CREATE TRIGGER trg_qms_notify_sessions AFTER INSERT OR UPDATE ON packaging_project_sessions FOR EACH ROW EXECUTE FUNCTION notify_qms_update()",
+        &[],
+    );
+    let _ = client.execute("DROP TRIGGER IF EXISTS trg_qms_notify_fabric ON packaging_project_fabric_lines", &[]);
+    let _ = client.execute(
+        "CREATE TRIGGER trg_qms_notify_fabric AFTER INSERT OR UPDATE ON packaging_project_fabric_lines FOR EACH ROW EXECUTE FUNCTION notify_qms_update()",
+        &[],
+    );
+
+    // packaging_project_fabric_lines: fabric tracking data written by external systems, displayed beneath yield matrix
+    let _ = client.execute(
+        "CREATE TABLE IF NOT EXISTS packaging_project_fabric_lines (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            project_id VARCHAR(100) REFERENCES packaging_projects(project_id) ON DELETE CASCADE,
+            label VARCHAR(255),
+            fabric_sent DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            consumption_plan DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            cutt_plan DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            actual_consumption DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            short_roll DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            sisa_kain DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            kepala_kain DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            return_kain DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            created_by VARCHAR(255),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )",
+        &[],
+    );
+
+    // Portal publish contract migrations: staged rows arrive with project_id=NULL keyed by production_group
+    let _ = client.execute("ALTER TABLE packaging_project_fabric_lines ALTER COLUMN project_id DROP NOT NULL", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_fabric_lines ADD COLUMN IF NOT EXISTS production_group VARCHAR(100)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_fabric_lines ADD COLUMN IF NOT EXISTS overconsumption DOUBLE PRECISION", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_fabric_lines ADD COLUMN IF NOT EXISTS fabric_price DOUBLE PRECISION", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_fabric_lines ADD COLUMN IF NOT EXISTS deduction DOUBLE PRECISION", &[]);
+    let _ = client.execute("CREATE INDEX IF NOT EXISTS idx_fabric_lines_production_group ON packaging_project_fabric_lines(production_group)", &[]);
+
+    // packaging_session_deduction_lines: manual deduction line items written by external systems
+    let _ = client.execute(
+        "CREATE TABLE IF NOT EXISTS packaging_session_deduction_lines (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            session_id VARCHAR(100) NOT NULL REFERENCES packaging_project_sessions(session_id) ON DELETE CASCADE,
+            description TEXT NOT NULL,
+            amount DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            created_by VARCHAR(255),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )",
+        &[],
+    );
+
+    // packaging_project_remarks: staged remarks keyed by production_group (portal publishes, console reads)
+    let _ = client.execute(
+        "CREATE TABLE IF NOT EXISTS packaging_project_remarks (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            production_group VARCHAR(100) UNIQUE NOT NULL,
+            project_id VARCHAR(100),
+            remarks TEXT,
+            updated_by VARCHAR(255),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )",
+        &[],
+    );
 
     // 4. Create packaging_project_reports table (Session-level & project-level QC OData cycle reports)
     client.execute(
@@ -617,7 +717,7 @@ pub fn check_connection() -> Result<(), String> {
 
 // Save or update a QC Template inside QMS (UPSERT)
 pub fn save_template(template: QcTemplate) -> Result<(), String> {
-    let _ = init_tables(); // Lazily ensure QMS schema exists
+    ensure_init(); // Lazily ensure QMS schema exists
     let mut client = get_connection_qms()?;
     
     client.execute(
@@ -639,7 +739,7 @@ pub fn save_template(template: QcTemplate) -> Result<(), String> {
 
 // Retrieve all QC Templates from QMS
 pub fn get_templates() -> Result<Vec<QcTemplate>, String> {
-    let _ = init_tables();
+    ensure_init();
     let mut client = get_connection_qms()?;
     let mut templates = Vec::new();
 
@@ -661,7 +761,7 @@ pub fn get_templates() -> Result<Vec<QcTemplate>, String> {
 
 // Save or update a QC Report inside QMS (UPSERT)
 pub fn save_report(report: QcReport) -> Result<(), String> {
-    let _ = init_tables(); // Lazily ensure QMS schema exists
+    ensure_init(); // Lazily ensure QMS schema exists
     let mut client = get_connection_qms()?;
     
     let parsed_time = NaiveDateTime::parse_from_str(&report.created_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -689,7 +789,7 @@ pub fn save_report(report: QcReport) -> Result<(), String> {
 
 // Retrieve all QC Reports from QMS
 pub fn get_reports() -> Result<Vec<QcReport>, String> {
-    let _ = init_tables();
+    ensure_init();
     let mut client = get_connection_qms()?;
     let mut reports = Vec::new();
 
@@ -719,22 +819,47 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
     
     let mut list = Vec::new();
     let rows = client.query(
-        "SELECT pa.\"PLMId\", pa.\"Brand\", pa.\"Season\", pa.\"ArticleName\", pa.\"ProductionGroup\", 
+        "SELECT pa.\"PLMId\" AS \"PLMId\",
+                pa.\"Brand\" AS \"Brand\",
+                pa.\"Season\" AS \"Season\",
+                pa.\"ArticleName\" AS \"ArticleName\",
+                pa.\"ProductionGroup\" AS \"ProductionGroup\",
                 string_agg(DISTINCT ph.\"PurchaseOrderNumber\", ', ') AS \"PurchaseOrderNumber\",
                 sum(pl.\"OrderedPurchaseQuantity\")::float8 AS \"OrderedQty\",
                 substring(min(ph.\"RequestedDeliveryDate\") from 1 for 10) AS \"PlanDate\",
                 string_agg(DISTINCT ph.\"PurchaseOrderName\", ', ') AS \"Vendor\",
-                pa.\"ProductionType\"
+                pa.\"ProductionType\" AS \"ProductionType\"
          FROM plm_activity pa
          LEFT JOIN po_lines pl ON pa.\"PLMId\" = pl.\"PLMId\" AND pl.\"LineDescription\" = 'Item Jasa CMT'
-         LEFT JOIN po_headers ph ON pl.\"PurchaseOrderNumber\" = ph.\"PurchaseOrderNumber\" AND ph.\"PurchPoolId\" = 'CMT'
+         LEFT JOIN po_headers ph ON pl.\"PurchaseOrderNumber\" = ph.\"PurchaseOrderNumber\"
          WHERE pa.\"PLMActivityStatus\" = 'Started' 
            AND pa.\"ProductionGroup\" IS NOT NULL
            AND pa.\"ProductionGroup\" != ''
-           AND pa.\"ProductionType\" = 'CMT'
+           AND pa.\"ProductionType\" IN ('CMT', 'In-house')
            AND pa.\"PLMId\" NOT IN (SELECT \"PLMId\" FROM plm_activity_shadowing)
          GROUP BY pa.\"PLMId\", pa.\"Brand\", pa.\"Season\", pa.\"ArticleName\", pa.\"ProductionGroup\", pa.\"ProductionType\"
-         ORDER BY pa.\"PLMId\" DESC", 
+
+         UNION ALL
+
+         SELECT COALESCE(pgl.\"ItemId\", '') AS \"PLMId\",
+                'N/A' AS \"Brand\",
+                'N/A' AS \"Season\",
+                COALESCE(pgl.\"SearchName\", 'N/A') AS \"ArticleName\",
+                pgl.\"ProductionGroup\" AS \"ProductionGroup\",
+                string_agg(DISTINCT pg.\"PONumber\", ', ') AS \"PurchaseOrderNumber\",
+                sum(pgl.\"Qty\")::float8 AS \"OrderedQty\",
+                substring(min(ph.\"RequestedDeliveryDate\") from 1 for 10) AS \"PlanDate\",
+                string_agg(DISTINCT ph.\"PurchaseOrderName\", ', ') AS \"Vendor\",
+                COALESCE(pg.\"ProductionType\", 'CMT') AS \"ProductionType\"
+         FROM production_group_lines pgl
+         LEFT JOIN production_groups pg ON pgl.\"ProductionGroup\" = pg.\"ProductionGroup\"
+         LEFT JOIN po_headers ph ON pg.\"PONumber\" = ph.\"PurchaseOrderNumber\"
+         WHERE pgl.\"ProdStatus\" = 'StartedUp'
+           AND pgl.\"ProductionGroup\" IS NOT NULL
+           AND pgl.\"ProductionGroup\" != ''
+           AND pgl.\"ProductionGroup\" NOT IN (SELECT DISTINCT \"ProductionGroup\" FROM plm_activity WHERE \"ProductionGroup\" IS NOT NULL)
+         GROUP BY pgl.\"ProductionGroup\", pgl.\"ItemId\", pgl.\"SearchName\", pg.\"ProductionType\"
+         ORDER BY \"ProductionGroup\" DESC", 
         &[]
     ).map_err(|e| format!("Failed to query active plm_activities: {}", e))?;
 
@@ -788,15 +913,124 @@ pub fn get_plm_activity_items(plm_id: &str) -> Result<Vec<PlmActivityItem>, Stri
 // NEW PACKAGING QC PROJECT & SESSION OPERATIONS
 // -------------------------------------------------------------
 
-pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
-    let _ = init_tables();
+/// DB-only upsert for existing projects when D365 is unreachable.
+/// Preserves existing job IDs and sales_price; updates status/deductions/timestamp.
+fn save_packaging_project_db_only(mut client: postgres::Client, project: PackagingProject) -> Result<String, String> {
+    // Resolve project_id and preserve existing job IDs from DB
+    let mut project_id = project.project_id.clone();
+    let mut final_cut_job = project.cmt_cut_job_id.clone();
+    let mut final_pak_job = project.cmt_pak_job_id.clone();
+    let mut final_sales_price = project.sales_price.unwrap_or(0.0);
+
+    let mut db_was_completed = false;
+    if let Ok(row) = client.query_one(
+        "SELECT project_id, cmt_cut_job_id, cmt_pak_job_id, sales_price, status FROM packaging_projects WHERE project_id = $1 OR production_group = $2 ORDER BY created_at DESC LIMIT 1",
+        &[&project.project_id, &project.production_group],
+    ) {
+        project_id = row.get(0);
+        let db_cut: Option<String> = row.get(1);
+        let db_pak: Option<String> = row.get(2);
+        let db_price: Option<f64> = row.get(3);
+        let db_status: Option<String> = row.get(4);
+        if final_cut_job.is_none() { final_cut_job = db_cut; }
+        if final_pak_job.is_none() { final_pak_job = db_pak; }
+        if final_sales_price == 0.0 { final_sales_price = db_price.unwrap_or(0.0); }
+        db_was_completed = db_status.as_deref() == Some("completed");
+    }
+
+    let has_deduction_val = project.has_deduction.unwrap_or(false);
+    let deduction_amount_val = project.deduction_amount.unwrap_or(0.0);
+
+    client.execute(
+        "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+         ON CONFLICT (project_id)
+         DO UPDATE SET status = $11, cmt_cut_job_id = COALESCE($12, packaging_projects.cmt_cut_job_id), cmt_pak_job_id = COALESCE($13, packaging_projects.cmt_pak_job_id), sales_price = CASE WHEN $14 > 0 THEN $14 ELSE packaging_projects.sales_price END, has_deduction = $15, deduction_amount = $16, updated_at = NOW()",
+        &[
+            &project_id, &project.plm_id, &project.brand, &project.season,
+            &project.article_name, &project.production_group,
+            &project.po_info, &project.po_qty, &project.po_plan_date, &project.po_vendor,
+            &project.status, &final_cut_job, &final_pak_job, &final_sales_price,
+            &has_deduction_val, &deduction_amount_val,
+        ],
+    ).map_err(|e| format!("Failed to save packaging project (db-only): {}", e))?;
+
+    // Adopt any portal-staged fabric lines (project_id=NULL) published before the project existed
+    let _ = client.execute(
+        "UPDATE packaging_project_fabric_lines SET project_id = $1 WHERE production_group = $2 AND project_id IS NULL",
+        &[&project_id, &project.production_group],
+    );
+
+    // Queue RPA jobs only on the transition to completed, not on every re-save
+    if project.status == "completed" && !db_was_completed {
+        if let Ok(mut rpa_client) = get_connection_rpa() {
+            let amount = final_sales_price * project.po_qty.unwrap_or(0.0);
+            let invoice_payload = serde_json::json!({
+                "PO": project.po_info.clone().unwrap_or_default(),
+                "vendor_name": project.po_vendor.clone().unwrap_or_default(),
+                "signed_doc": project.verified_doc.clone().unwrap_or_default(),
+                "amount": amount,
+            });
+            let invoice_exists: bool = rpa_client.query_one(
+                "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'invoice' AND status IN ('incomplete', 'processing'))",
+                &[&project_id]
+            ).map(|r| r.get(0)).unwrap_or(false);
+            if !invoice_exists {
+                let _ = rpa_client.execute(
+                    "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload) VALUES ('packaging_project', $1, 'invoice', 'incomplete', $2)",
+                    &[&project_id, &invoice_payload],
+                );
+            }
+        }
+        let _ = queue_job_trans_raf_internal(&project_id);
+    } else {
+        if let Ok(mut rpa_client) = get_connection_rpa() {
+            let _ = rpa_client.execute(
+                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type IN ('invoice', 'deduction') AND status IN ('incomplete', 'failed')",
+                &[&project_id],
+            );
+        }
+    }
+
+    Ok(project_id)
+}
+
+/// Lightweight update — only touches deduction fields. No D365 calls.
+pub fn update_packaging_project_deductions(project_id: &str, has_deduction: bool, deduction_amount: f64) -> Result<(), String> {
     let mut client = get_connection_qms()?;
-    
-    // Retrieve credentials and token
-    let creds = get_d365_creds()
-        .map_err(|e| format!("Failed to retrieve D365 environment credentials from database: {}", e))?;
-    let token = get_d365_token(&creds)
-        .map_err(|e| format!("Failed to fetch Microsoft Entra OAuth2 access token: {}", e))?;
+    client.execute(
+        "UPDATE packaging_projects SET has_deduction = $1, deduction_amount = $2, updated_at = NOW() WHERE project_id = $3",
+        &[&has_deduction, &deduction_amount, &project_id],
+    ).map_err(|e| format!("Failed to update project deductions: {}", e))?;
+    Ok(())
+}
+
+pub fn save_packaging_project(project: PackagingProject) -> Result<String, String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+
+    // Check if this project already exists in the DB — used to make D365 calls non-fatal for updates
+    let project_exists = client.query_opt(
+        "SELECT 1 FROM packaging_projects WHERE project_id = $1 OR production_group = $2 LIMIT 1",
+        &[&project.project_id, &project.production_group],
+    ).map(|r| r.is_some()).unwrap_or(false);
+
+    // Retrieve credentials and token — non-fatal for existing projects
+    let d365_result = get_d365_creds()
+        .and_then(|creds| get_d365_token(&creds).map(|token| (creds, token)));
+
+    let (creds, token) = match d365_result {
+        Ok(pair) => pair,
+        Err(e) => {
+            if !project_exists {
+                return Err(format!("Failed to connect to D365 (required for new project download): {}", e));
+            }
+            println!("Warning: D365 unavailable, proceeding with DB-only update for existing project: {}", e);
+            // Fall through with empty creds/token — D365-dependent blocks below will be skipped
+            // by the presence of existing job IDs in the DB
+            return save_packaging_project_db_only(client, project);
+        }
+    };
 
     // 1. Fetch job transactions to get CMT-Cut/Pak job IDs and the ArticleId
     let filter_str = format!("ProductionGroup eq '{}'", project.production_group);
@@ -816,12 +1050,13 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
                     let op = rec["Operation"].as_str().unwrap_or("");
                     let job_id = rec["JobTransactionId"].as_str().map(|s| s.to_string());
                     let created_str = rec["CreatedDateTime1"].as_str().unwrap_or("");
-                    if op == "CMT-Cut" {
+                    let op_upper = op.to_uppercase();
+                    if op_upper == "CMT-CUT" {
                         if cut_job_id.is_none() || created_str > cut_created.as_str() {
                             cut_job_id = job_id;
                             cut_created = created_str.to_string();
                         }
-                    } else if op == "CMT-Pak" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
+                    } else if op_upper == "CMT-PAK" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
                         pak_job_id = job_id;
                         pak_created = created_str.to_string();
                     }
@@ -853,17 +1088,19 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
     let mut existing_cut_job: Option<String> = None;
     let mut existing_pak_job: Option<String> = None;
     let mut existing_sales_price: Option<f64> = None;
+    let mut existing_status: Option<String> = None;
 
     if let Ok(row) = client.query_one(
-        "SELECT project_id, cmt_cut_job_id, cmt_pak_job_id, sales_price FROM packaging_projects 
-         WHERE plm_id = $1 OR production_group = $2 
+        "SELECT project_id, cmt_cut_job_id, cmt_pak_job_id, sales_price, status FROM packaging_projects
+         WHERE production_group = $1
          ORDER BY created_at DESC LIMIT 1",
-        &[&project.plm_id, &project.production_group]
+        &[&project.production_group]
     ) {
         existing_project_id = Some(row.get(0));
         existing_cut_job = row.get(1);
         existing_pak_job = row.get(2);
         existing_sales_price = row.get(3);
+        existing_status = row.get(4);
     }
 
     // Assign fallback job IDs from existing database records if ERP returned none
@@ -922,6 +1159,9 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
 
     let final_sales_price = sales_price.unwrap_or(0.0);
 
+    // Resolve project ID (use existing one if found to prevent duplicate projects when downloading again)
+    let project_id = existing_project_id.clone().unwrap_or_else(|| project.project_id.clone());
+
     // 2. Insert/upsert the project row first so foreign key constraints on details/lines succeed
     let has_deduction_val = project.has_deduction.unwrap_or(false);
     let deduction_amount_val = project.deduction_amount.unwrap_or(0.0);
@@ -931,7 +1171,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
          ON CONFLICT (project_id)
          DO UPDATE SET plm_id = $2, brand = $3, season = $4, article_name = $5, production_group = $6, po_info = $7, po_qty = $8, po_plan_date = $9, po_vendor = $10, status = $11, cmt_cut_job_id = $12, cmt_pak_job_id = $13, sales_price = $14, has_deduction = $15, deduction_amount = $16, updated_at = NOW()",
         &[
-            &project.project_id,
+            &project_id,
             &project.plm_id,
             &project.brand,
             &project.season,
@@ -950,24 +1190,29 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
         ],
     ).map_err(|e| format!("Failed to save packaging project: {}", e))?;
 
+    // Adopt any portal-staged fabric lines (project_id=NULL) published before the project existed
+    let _ = client.execute(
+        "UPDATE packaging_project_fabric_lines SET project_id = $1 WHERE production_group = $2 AND project_id IS NULL",
+        &[&project_id, &project.production_group],
+    );
+
     // 3. Seed detail lines (if not already present)
-    let mut qms_client = get_connection_qms()?;
-    let initial_pak_count: i64 = qms_client.query_one(
+    let initial_pak_count: i64 = client.query_one(
         "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = 'INITIAL_PAK'",
-        &[&project.project_id]
+        &[&project_id]
     ).map(|r| r.get(0)).unwrap_or(0);
 
     if initial_pak_count == 0 {
         let mut seeded_from_erp = false;
         // Fetch and seed CMT-Cut lines
         if let Some(ref cut_id) = final_cut_job {
-            if fetch_and_store_lines(&creds, &token, &mut qms_client, &project.project_id, cut_id, None).is_ok() {
+            if fetch_and_store_lines(&creds, &token, &mut client, &project_id, cut_id, None).is_ok() {
                 seeded_from_erp = true;
             }
         }
         // Fetch and seed CMT-Pak lines
         if let Some(ref pak_id) = final_pak_job {
-            if fetch_and_store_lines(&creds, &token, &mut qms_client, &project.project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
+            if fetch_and_store_lines(&creds, &token, &mut client, &project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
                 seeded_from_erp = true;
             }
         }
@@ -976,7 +1221,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
         let mut seeded_from_prev = false;
         if !seeded_from_erp {
             if let Some(ref prev_pid) = existing_project_id {
-                let rows = qms_client.query(
+                let rows = client.query(
                     "SELECT data_area_id, line_no, job_transaction_id, item_id, size_val, global_display_order,
                             reject_produksi, reject_finishing, reject_embro, qty_order, total_qty_sample, barang_hilang,
                             reject_cutting, total_reject_qty, reject_printing, ref_rec_id, total_good_qty, reject_sewing,
@@ -1014,9 +1259,9 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
                         let session_version: Option<String> = r_row.get(23);
                         let session_id: Option<String> = r_row.get(24);
 
-                        let new_report_id = format!("{}_{}_{}", project.project_id, job_transaction_id.as_deref().unwrap_or("job"), idx);
+                        let new_report_id = format!("{}_{}_{}", project_id, job_transaction_id.as_deref().unwrap_or("job"), idx);
 
-                        let _ = qms_client.execute(
+                        let _ = client.execute(
                             "INSERT INTO packaging_project_reports (
                                 report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
                                 item_id, size_val, global_display_order, reject_produksi, reject_finishing,
@@ -1028,7 +1273,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
                             &[
                                 &new_report_id,
                                 &session_id,
-                                &project.project_id,
+                                &project_id,
                                 &data_area_id,
                                 &line_no,
                                 &job_transaction_id,
@@ -1063,57 +1308,39 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
 
         // Fallback: Seed directly from production_group_lines in VSM if both ERP seeding and previous copy failed
         if !seeded_from_erp && !seeded_from_prev {
-            if let Err(e) = seed_reports_from_production_group_lines(&mut qms_client, &project.project_id, &project.production_group, &project.plm_id) {
+            if let Err(e) = seed_reports_from_production_group_lines(&mut client, &project_id, &project.production_group, &project.plm_id) {
                 println!("Warning: Fallback seeding from VSM failed: {}", e);
             }
         }
     }
 
-    // Seed Session 0 and Session 1 directly
+    // Seed Session 0 and Session 1 only for new projects — existing projects already have these seeded
+    if existing_project_id.is_none() {
     // 1. Calculate aggregated values from OData details stored in packaging_project_reports
     let mut total_order_qty = project.po_qty.unwrap_or(0.0) as i32;
-    let mut cutting_pcs = total_order_qty;
-    let mut packing_pcs = total_order_qty;
     
-    // Query CMT-Cut lines (session_id IS NULL)
+    // Query CMT-Cut lines (session_id IS NULL) to resolve total_order_qty
     if let Ok(rows) = client.query(
-        "SELECT COALESCE(SUM(qty_order), 0)::int4, COALESCE(SUM(total_good_qty), 0)::int4 
+        "SELECT COALESCE(SUM(qty_order), 0)::int4
          FROM packaging_project_reports 
          WHERE project_id = $1 AND session_id IS NULL",
-        &[&project.project_id]
+        &[&project_id]
     ) {
         if let Some(row) = rows.first() {
             let order_sum: i32 = row.get(0);
-            let good_sum: i32 = row.get(1);
             if order_sum > 0 {
                 total_order_qty = order_sum;
-            }
-            if good_sum > 0 {
-                cutting_pcs = good_sum;
-            }
-        }
-    }
-
-    // Query CMT-Pak lines (session_id = 'INITIAL_PAK')
-    if let Ok(rows) = client.query(
-        "SELECT COALESCE(SUM(total_good_qty), 0)::int4 
-         FROM packaging_project_reports 
-         WHERE project_id = $1 AND session_id = 'INITIAL_PAK'",
-        &[&project.project_id]
-    ) {
-        if let Some(row) = rows.first() {
-            let good_sum: i32 = row.get(0);
-            if good_sum > 0 {
-                packing_pcs = good_sum;
             }
         }
     }
     
-    let sewing_pcs = cutting_pcs;
-    let finishing_pcs = cutting_pcs;
+    let cutting_pcs = 0;
+    let packing_pcs = 0;
+    let sewing_pcs = 0;
+    let finishing_pcs = 0;
 
     // 2. UPSERT Session 0 (Baseline)
-    let session_0_id = format!("BASE-{}", project.project_id);
+    let session_0_id = format!("BASE-{}", project_id);
     client.execute(
         "INSERT INTO packaging_project_sessions (
             session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
@@ -1128,7 +1355,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
             qty_available = $3, total_store = $3, store_inspected = $3, cutting_pcs = $4, sewing_pcs = $5, finishing_pcs = $6, packing_pcs = $7",
         &[
             &session_0_id,
-            &project.project_id,
+            &project_id,
             &total_order_qty,
             &cutting_pcs,
             &sewing_pcs,
@@ -1138,7 +1365,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
     ).map_err(|e| format!("Failed to seed Session 0: {}", e))?;
 
     // 3. UPSERT Session 1 (Pre Final)
-    let session_1_id = format!("SES-{}-1", project.project_id);
+    let session_1_id = format!("SES-{}-1", project_id);
     client.execute(
         "INSERT INTO packaging_project_sessions (
             session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
@@ -1152,7 +1379,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
          ON CONFLICT (session_id) DO NOTHING",
         &[
             &session_1_id,
-            &project.project_id,
+            &project_id,
             &total_order_qty,
             &cutting_pcs,
             &sewing_pcs,
@@ -1164,7 +1391,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
     // 4. Duplicate INITIAL_PAK lines into Session 1 report lines if they don't exist
     let existing_lines_count: i64 = client.query_one(
         "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
-        &[&project.project_id, &session_1_id]
+        &[&project_id, &session_1_id]
     ).map(|r| r.get(0)).unwrap_or(0);
     
     if existing_lines_count == 0 {
@@ -1186,12 +1413,15 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
                 0, gramasi, 0, 0, 0.0, 'v1.0', NOW()
              FROM packaging_project_reports
              WHERE project_id = $2 AND session_id = 'INITIAL_PAK'",
-            &[&session_1_id, &project.project_id]
+            &[&session_1_id, &project_id]
         ).map_err(|e| format!("Failed to duplicate INITIAL_PAK lines to Session 1: {}", e))?;
     }
 
-    // Universal RPA Queue Sync Triggers
-    if project.status == "completed" {
+    } // end: new project seeding block
+
+    // Universal RPA Queue Sync Triggers — only fire on the transition to completed, not on every re-save
+    let was_already_completed = existing_status.as_deref() == Some("completed");
+    if project.status == "completed" && !was_already_completed {
         let mut rpa_client = get_connection_rpa()?;
         
         // 1. Resolve latest session version
@@ -1200,7 +1430,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
             "SELECT version FROM packaging_project_sessions 
              WHERE project_id = $1 
              ORDER BY cycle_number DESC LIMIT 1",
-            &[&project.project_id]
+            &[&project_id]
         ) {
             if let Some(v) = row.get::<_, Option<String>>(0) {
                 latest_version = v;
@@ -1221,21 +1451,21 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
 
         // Check invoice job
         let invoice_exists: bool = rpa_client.query_one(
-            "SELECT EXISTS(SELECT 1 FROM rpa_queue WHERE entity_id = $1 AND rpa_type = 'invoice' AND status IN ('pending', 'processing'))",
-            &[&project.project_id]
+            "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'invoice' AND status IN ('incomplete', 'processing'))",
+            &[&project_id]
         ).map(|r| r.get(0)).unwrap_or(false);
 
         if !invoice_exists {
             rpa_client.execute(
-                "INSERT INTO rpa_queue (entity_type, entity_id, rpa_type, status, payload) 
-                 VALUES ('packaging_project', $1, 'invoice', 'pending', $2)",
-                &[&project.project_id, &invoice_payload]
+                "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload)
+                 VALUES ('packaging_project', $1, 'invoice', 'incomplete', $2)",
+                &[&project_id, &invoice_payload]
             ).map_err(|e| format!("Failed to queue invoice RPA job: {}", e))?;
         } else {
             rpa_client.execute(
-                "UPDATE rpa_queue SET payload = $2, updated_at = NOW() 
-                 WHERE entity_id = $1 AND rpa_type = 'invoice' AND status = 'pending'",
-                &[&project.project_id, &invoice_payload]
+                "UPDATE rpa_queues SET payload = $2, updated_at = NOW()
+                 WHERE entity_id = $1 AND rpa_type = 'invoice' AND status = 'incomplete'",
+                &[&project_id, &invoice_payload]
             ).map_err(|e| format!("Failed to update invoice RPA job payload: {}", e))?;
         }
 
@@ -1250,283 +1480,307 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<(), String> {
             });
 
             let deduction_exists: bool = rpa_client.query_one(
-                "SELECT EXISTS(SELECT 1 FROM rpa_queue WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('pending', 'processing'))",
-                &[&project.project_id]
+                "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('incomplete', 'processing'))",
+                &[&project_id]
             ).map(|r| r.get(0)).unwrap_or(false);
 
             if !deduction_exists {
                 rpa_client.execute(
-                    "INSERT INTO rpa_queue (entity_type, entity_id, rpa_type, status, payload) 
-                     VALUES ('packaging_project', $1, 'deduction', 'pending', $2)",
-                    &[&project.project_id, &deduction_payload]
+                    "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload)
+                     VALUES ('packaging_project', $1, 'deduction', 'incomplete', $2)",
+                    &[&project_id, &deduction_payload]
                 ).map_err(|e| format!("Failed to queue deduction RPA job: {}", e))?;
             } else {
                 rpa_client.execute(
-                    "UPDATE rpa_queue SET payload = $2, updated_at = NOW() 
-                     WHERE entity_id = $1 AND rpa_type = 'deduction' AND status = 'pending'",
-                    &[&project.project_id, &deduction_payload]
+                    "UPDATE rpa_queues SET payload = $2, updated_at = NOW()
+                     WHERE entity_id = $1 AND rpa_type = 'deduction' AND status = 'incomplete'",
+                    &[&project_id, &deduction_payload]
                 ).map_err(|e| format!("Failed to update deduction RPA job payload: {}", e))?;
             }
         } else {
-            // Delete any pending or failed deduction jobs if deductions are removed or zero
+            // Delete any incomplete or failed deduction jobs if deductions are removed or zero
             rpa_client.execute(
-                "DELETE FROM rpa_queue WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('pending', 'failed')",
-                &[&project.project_id]
+                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('incomplete', 'failed')",
+                &[&project_id]
             ).ok();
         }
 
-        // 3. Queue 'job_details' RPA job with chronological version-by-version size metrics
-        // Retrieve all unique sizes for this project in correct database display sequence
-        let size_rows = client.query(
-            "SELECT size_val, line_no, global_display_order 
-             FROM packaging_project_reports 
-             WHERE project_id = $1 
-             ORDER BY line_no ASC, global_display_order ASC",
-            &[&project.project_id]
-        ).unwrap_or_default();
-        let mut ordered_sizes = Vec::new();
-        for s_row in size_rows {
-            if let Some(sz) = s_row.get::<_, Option<String>>(0) {
-                let sz_trimmed = sz.trim().to_string();
-                if !sz_trimmed.is_empty() && !ordered_sizes.contains(&sz_trimmed) {
-                    ordered_sizes.push(sz_trimmed);
-                }
-            }
-        }
-
-        // Retrieve all inspection sessions for this project (excluding cycle 0 baseline)
-        let session_rows = client.query(
-            "SELECT session_id, cycle_number, inspection_date, result, version 
-             FROM packaging_project_sessions 
-             WHERE project_id = $1 AND cycle_number >= 1 
-             ORDER BY cycle_number ASC",
-            &[&project.project_id]
-        ).map_err(|e| format!("Failed to query sessions for RPA job details: {}", e))?;
-
-        struct SessionData {
-            cycle_number: i32,
-            inspection_date: Option<chrono::NaiveDate>,
-            lines: Vec<(String, f64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>,
-        }
-
-        let mut sessions_list = Vec::new();
-        for s_row in session_rows {
-            let session_id: String = s_row.get(0);
-            let cycle_number: i32 = s_row.get(1);
-            let inspection_date: Option<chrono::NaiveDate> = s_row.get(2);
-
-            let line_rows = client.query(
-                "SELECT size_val, session_qty,
-                        COALESCE(reject_produksi, 0),
-                        COALESCE(reject_finishing, 0),
-                        COALESCE(reject_embro, 0),
-                        COALESCE(barang_hilang, 0),
-                        COALESCE(reject_cutting, 0),
-                        COALESCE(reject_printing, 0),
-                        COALESCE(reject_sewing, 0),
-                        COALESCE(reject_washing, 0),
-                        COALESCE(btj, 0),
-                        COALESCE(reject_bahan, 0)
-                 FROM packaging_project_reports
-                 WHERE project_id = $1 AND session_id = $2",
-                &[&project.project_id, &session_id]
-            ).map_err(|e| format!("Failed to query report lines for RPA session details: {}", e))?;
-
-            let mut lines = Vec::new();
-            for l_row in line_rows {
-                let size_val: Option<String> = l_row.get(0);
-                let session_qty: f64 = l_row.get(1);
-                let reject_produksi: i32 = l_row.get(2);
-                let reject_finishing: i32 = l_row.get(3);
-                let reject_embro: i32 = l_row.get(4);
-                let barang_hilang: i32 = l_row.get(5);
-                let reject_cutting: i32 = l_row.get(6);
-                let reject_printing: i32 = l_row.get(7);
-                let reject_sewing: i32 = l_row.get(8);
-                let reject_washing: i32 = l_row.get(9);
-                let btj: i32 = l_row.get(10);
-                let reject_bahan: i32 = l_row.get(11);
-
-                if let Some(sz) = size_val {
-                    lines.push((
-                        sz.trim().to_string(),
-                        session_qty,
-                        reject_produksi,
-                        reject_finishing,
-                        reject_embro,
-                        barang_hilang,
-                        reject_cutting,
-                        reject_printing,
-                        reject_sewing,
-                        reject_washing,
-                        btj,
-                        reject_bahan,
-                    ));
-                }
-            }
-
-            sessions_list.push(SessionData {
-                cycle_number,
-                inspection_date,
-                lines,
-            });
-        }
-
-        // Define session groups mapping
-        struct GroupDef {
-            label: String,
-            cycles: Vec<i32>,
-        }
-
-        let mut group_defs = vec![
-            GroupDef {
-                label: "final_1".to_string(),
-                cycles: vec![1, 2],
-            },
-            GroupDef {
-                label: "final_2".to_string(),
-                cycles: vec![3],
-            },
-            GroupDef {
-                label: "final_3".to_string(),
-                cycles: vec![4],
-            },
-        ];
-
-        let mut max_cycle = 4;
-        for sess in &sessions_list {
-            if sess.cycle_number > max_cycle {
-                max_cycle = sess.cycle_number;
-            }
-        }
-        for c in 5..=max_cycle {
-            group_defs.push(GroupDef {
-                label: format!("final_{}", c - 1),
-                cycles: vec![c],
-            });
-        }
-
-        let mut sessions_payload = Vec::new();
-        for gdef in group_defs {
-            let group_sessions: Vec<&SessionData> = sessions_list.iter()
-                .filter(|s| gdef.cycles.contains(&s.cycle_number))
-                .collect();
-
-            if group_sessions.is_empty() {
-                continue;
-            }
-
-            let mut inspection_date = None;
-            for gs in &group_sessions {
-                if let Some(d) = gs.inspection_date {
-                    inspection_date = Some(d.format("%Y-%m-%d").to_string());
-                }
-            }
-
-            // Aggregate good_qty, reject_qty (total rejects), and each individual reject type per size
-            let mut size_map = std::collections::HashMap::new();
-            for gs in &group_sessions {
-                for (sz, good, rej_prod, rej_fin, rej_emb, bar_hil, rej_cut, rej_prt, rej_sew, rej_was, btj_val, rej_bah) in &gs.lines {
-                    let entry = size_map.entry(sz.clone()).or_insert((
-                        0.0, // good_qty
-                        0,   // reject_qty
-                        0,   // reject_produksi
-                        0,   // reject_finishing
-                        0,   // reject_embro
-                        0,   // barang_hilang
-                        0,   // reject_cutting
-                        0,   // reject_printing
-                        0,   // reject_sewing
-                        0,   // reject_washing
-                        0,   // btj
-                        0,   // reject_bahan
-                    ));
-                    entry.0 += good;
-                    let total_rej = rej_bah + rej_cut + rej_sew + rej_fin + rej_prt + rej_emb + rej_was + btj_val + bar_hil;
-                    entry.1 += total_rej;
-                    entry.2 += rej_prod;
-                    entry.3 += rej_fin;
-                    entry.4 += rej_emb;
-                    entry.5 += bar_hil;
-                    entry.6 += rej_cut;
-                    entry.7 += rej_prt;
-                    entry.8 += rej_sew;
-                    entry.9 += rej_was;
-                    entry.10 += btj_val;
-                    entry.11 += rej_bah;
-                }
-            }
-
-            let mut sizes_json = Vec::new();
-            for sz in &ordered_sizes {
-                if let Some(metrics) = size_map.get(sz) {
-                    sizes_json.push(serde_json::json!({
-                        "size": sz,
-                        "good_qty": metrics.0,
-                        "reject_qty": metrics.1,
-                        "reject_produksi": metrics.2,
-                        "reject_finishing": metrics.3,
-                        "reject_embro": metrics.4,
-                        "barang_hilang": metrics.5,
-                        "reject_cutting": metrics.6,
-                        "reject_printing": metrics.7,
-                        "reject_sewing": metrics.8,
-                        "reject_washing": metrics.9,
-                        "btj": metrics.10,
-                        "reject_bahan": metrics.11,
-                    }));
-                }
-            }
-
-            sessions_payload.push(serde_json::json!({
-                "version_label": gdef.label,
-                "inspection_date": inspection_date.unwrap_or_default(),
-                "sizes": sizes_json,
-            }));
-        }
-
-        let job_details_payload = serde_json::json!({
-            "project_id": project.project_id.clone(),
-            "production_group": project.production_group.clone(),
-            "job_transaction_id": project.cmt_pak_job_id.clone().unwrap_or_default(),
-            "po_info": project.po_info.clone().unwrap_or_default(),
-            "sessions": sessions_payload,
-        });
-
-        let job_details_exists: bool = rpa_client.query_one(
-            "SELECT EXISTS(SELECT 1 FROM rpa_queue WHERE entity_id = $1 AND rpa_type = 'job_details' AND status IN ('pending', 'processing'))",
-            &[&project.project_id]
-        ).map(|r| r.get(0)).unwrap_or(false);
-
-        if !job_details_exists {
-            rpa_client.execute(
-                "INSERT INTO rpa_queue (entity_type, entity_id, rpa_type, status, payload) 
-                 VALUES ('packaging_project', $1, 'job_details', 'pending', $2)",
-                &[&project.project_id, &job_details_payload]
-            ).map_err(|e| format!("Failed to queue job_details RPA job: {}", e))?;
-        } else {
-            rpa_client.execute(
-                "UPDATE rpa_queue SET payload = $2, updated_at = NOW() 
-                 WHERE entity_id = $1 AND rpa_type = 'job_details' AND status = 'pending'",
-                &[&project.project_id, &job_details_payload]
-            ).map_err(|e| format!("Failed to update job_details RPA job payload: {}", e))?;
-        }
+        // 3. Queue 'job_trans_raf' RPA job
+        queue_job_trans_raf_internal(&project_id)?;
     } else {
-        // If status is NOT completed (e.g. reverted to downloaded), remove pending and failed jobs
+        // If status is NOT completed (e.g. reverted to downloaded or is a draft save),
+        // we delete any incomplete or failed 'invoice' and 'deduction' jobs, but NOT 'job_trans_raf'.
         if let Ok(mut rpa_client) = get_connection_rpa() {
             rpa_client.execute(
-                "DELETE FROM rpa_queue WHERE entity_id = $1 AND status IN ('pending', 'failed')",
-                &[&project.project_id]
+                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type IN ('invoice', 'deduction') AND status IN ('incomplete', 'failed')",
+                &[&project_id]
             ).ok();
         }
+    }
+
+    Ok(project_id)
+}
+
+pub fn trigger_partial_process_sync(project_id: &str) -> Result<String, String> {
+    queue_job_trans_raf_internal(project_id)?;
+    Ok(project_id.to_string())
+}
+
+pub fn queue_job_trans_raf_internal(project_id: &str) -> Result<(), String> {
+    let mut client = get_connection_qms()?;
+    let row = client.query_one(
+        "SELECT production_group, cmt_pak_job_id, po_info FROM packaging_projects WHERE project_id = $1",
+        &[&project_id]
+    ).map_err(|e| format!("Failed to retrieve project details: {}", e))?;
+
+    let production_group: String = row.get(0);
+    let cmt_pak_job_id: Option<String> = row.get(1);
+    let po_info: Option<String> = row.get(2);
+
+    // Retrieve all unique sizes for this project in correct database display sequence
+    let size_rows = client.query(
+        "SELECT size_val, line_no, global_display_order 
+         FROM packaging_project_reports 
+         WHERE project_id = $1 
+         ORDER BY line_no ASC, global_display_order ASC",
+        &[&project_id]
+    ).unwrap_or_default();
+    let mut ordered_sizes = Vec::new();
+    for s_row in size_rows {
+        if let Some(sz) = s_row.get::<_, Option<String>>(0) {
+            let sz_trimmed = sz.trim().to_string();
+            if !sz_trimmed.is_empty() && !ordered_sizes.contains(&sz_trimmed) {
+                ordered_sizes.push(sz_trimmed);
+            }
+        }
+    }
+
+    // Retrieve all inspection sessions for this project (excluding cycle 0 baseline)
+    let session_rows = client.query(
+        "SELECT session_id, cycle_number, inspection_date, result, version 
+         FROM packaging_project_sessions 
+         WHERE project_id = $1 AND cycle_number >= 1 
+         ORDER BY cycle_number ASC",
+        &[&project_id]
+    ).map_err(|e| format!("Failed to query sessions for RPA job details: {}", e))?;
+
+    struct SessionData {
+        cycle_number: i32,
+        inspection_date: Option<chrono::NaiveDate>,
+        lines: Vec<(String, f64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)>,
+    }
+
+    let mut sessions_list = Vec::new();
+    for s_row in session_rows {
+        let session_id: String = s_row.get(0);
+        let cycle_number: i32 = s_row.get(1);
+        let inspection_date: Option<chrono::NaiveDate> = s_row.get(2);
+
+        let line_rows = client.query(
+            "SELECT size_val, session_qty,
+                    COALESCE(reject_produksi, 0),
+                    COALESCE(reject_finishing, 0),
+                    COALESCE(reject_embro, 0),
+                    COALESCE(barang_hilang, 0),
+                    COALESCE(reject_cutting, 0),
+                    COALESCE(reject_printing, 0),
+                    COALESCE(reject_sewing, 0),
+                    COALESCE(reject_washing, 0),
+                    COALESCE(btj, 0),
+                    COALESCE(reject_bahan, 0)
+             FROM packaging_project_reports
+             WHERE project_id = $1 AND session_id = $2",
+            &[&project_id, &session_id]
+        ).map_err(|e| format!("Failed to query report lines for RPA session details: {}", e))?;
+
+        let mut lines = Vec::new();
+        for l_row in line_rows {
+            let size_val: Option<String> = l_row.get(0);
+            let session_qty: f64 = l_row.get(1);
+            let reject_produksi: i32 = l_row.get(2);
+            let reject_finishing: i32 = l_row.get(3);
+            let reject_embro: i32 = l_row.get(4);
+            let barang_hilang: i32 = l_row.get(5);
+            let reject_cutting: i32 = l_row.get(6);
+            let reject_printing: i32 = l_row.get(7);
+            let reject_sewing: i32 = l_row.get(8);
+            let reject_washing: i32 = l_row.get(9);
+            let btj: i32 = l_row.get(10);
+            let reject_bahan: i32 = l_row.get(11);
+
+            if let Some(sz) = size_val {
+                lines.push((
+                    sz.trim().to_string(),
+                    session_qty,
+                    reject_produksi,
+                    reject_finishing,
+                    reject_embro,
+                    barang_hilang,
+                    reject_cutting,
+                    reject_printing,
+                    reject_sewing,
+                    reject_washing,
+                    btj,
+                    reject_bahan,
+                ));
+            }
+        }
+
+        sessions_list.push(SessionData {
+            cycle_number,
+            inspection_date,
+            lines,
+        });
+    }
+
+    // Define session groups mapping
+    struct GroupDef {
+        label: String,
+        cycles: Vec<i32>,
+    }
+
+    let mut group_defs = vec![
+        GroupDef {
+            label: "final_1".to_string(),
+            cycles: vec![1, 2],
+        },
+        GroupDef {
+            label: "final_2".to_string(),
+            cycles: vec![3],
+        },
+        GroupDef {
+            label: "final_3".to_string(),
+            cycles: vec![4],
+        },
+    ];
+
+    let mut max_cycle = 4;
+    for sess in &sessions_list {
+        if sess.cycle_number > max_cycle {
+            max_cycle = sess.cycle_number;
+        }
+    }
+    for c in 5..=max_cycle {
+        group_defs.push(GroupDef {
+            label: format!("final_{}", c - 1),
+            cycles: vec![c],
+        });
+    }
+
+    let mut sessions_payload = Vec::new();
+    for gdef in group_defs {
+        let group_sessions: Vec<&SessionData> = sessions_list.iter()
+            .filter(|s| gdef.cycles.contains(&s.cycle_number))
+            .collect();
+
+        if group_sessions.is_empty() {
+            continue;
+        }
+
+        let mut inspection_date = None;
+        for gs in &group_sessions {
+            if let Some(d) = gs.inspection_date {
+                inspection_date = Some(d.format("%Y-%m-%d").to_string());
+            }
+        }
+
+        // Aggregate good_qty, reject_qty (total rejects), and each individual reject type per size
+        let mut size_map = std::collections::HashMap::new();
+        for gs in &group_sessions {
+            for (sz, good, rej_prod, rej_fin, rej_emb, bar_hil, rej_cut, rej_prt, rej_sew, rej_was, btj_val, rej_bah) in &gs.lines {
+                let entry = size_map.entry(sz.clone()).or_insert((
+                    0.0, // good_qty
+                    0,   // reject_qty
+                    0,   // reject_produksi
+                    0,   // reject_finishing
+                    0,   // reject_embro
+                    0,   // barang_hilang
+                    0,   // reject_cutting
+                    0,   // reject_printing
+                    0,   // reject_sewing
+                    0,   // reject_washing
+                    0,   // btj
+                    0,   // reject_bahan
+                ));
+                entry.0 += good;
+                let total_rej = rej_bah + rej_cut + rej_sew + rej_fin + rej_prt + rej_emb + rej_was + btj_val + bar_hil;
+                entry.1 += total_rej;
+                entry.2 += rej_prod;
+                entry.3 += rej_fin;
+                entry.4 += rej_emb;
+                entry.5 += bar_hil;
+                entry.6 += rej_cut;
+                entry.7 += rej_prt;
+                entry.8 += rej_sew;
+                entry.9 += rej_was;
+                entry.10 += btj_val;
+                entry.11 += rej_bah;
+            }
+        }
+
+        let mut sizes_json = Vec::new();
+        for sz in &ordered_sizes {
+            if let Some(metrics) = size_map.get(sz) {
+                sizes_json.push(serde_json::json!({
+                    "size": sz,
+                    "good_qty": metrics.0,
+                    "reject_qty": metrics.1,
+                    "reject_produksi": metrics.2,
+                    "reject_finishing": metrics.3,
+                    "reject_embro": metrics.4,
+                    "barang_hilang": metrics.5,
+                    "reject_cutting": metrics.6,
+                    "reject_printing": metrics.7,
+                    "reject_sewing": metrics.8,
+                    "reject_washing": metrics.9,
+                    "btj": metrics.10,
+                    "reject_bahan": metrics.11,
+                }));
+            }
+        }
+
+        sessions_payload.push(serde_json::json!({
+            "version_label": gdef.label,
+            "inspection_date": inspection_date.unwrap_or_default(),
+            "sizes": sizes_json,
+        }));
+    }
+
+    let job_trans_raf_payload = serde_json::json!({
+        "project_id": project_id.to_string(),
+        "production_group": production_group,
+        "job_transaction_id": cmt_pak_job_id.unwrap_or_default(),
+        "po_info": po_info.unwrap_or_default(),
+        "sessions": sessions_payload,
+    });
+
+    let mut rpa_client = get_connection_rpa()?;
+    let job_trans_exists: bool = rpa_client.query_one(
+        "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'job_trans_raf' AND status IN ('pending', 'processing'))",
+        &[&project_id]
+    ).map(|r| r.get(0)).unwrap_or(false);
+
+    if job_trans_exists {
+        rpa_client.execute(
+            "UPDATE rpa_queues SET payload = $2, updated_at = NOW() WHERE entity_id = $1 AND rpa_type = 'job_trans_raf' AND status = 'pending'",
+            &[&project_id, &job_trans_raf_payload]
+        ).map_err(|e| format!("Failed to update job_trans_raf RPA job payload: {}", e))?;
+    } else {
+        rpa_client.execute(
+            "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload)
+             VALUES ('packaging_project', $1, 'job_trans_raf', 'pending', $2)",
+            &[&project_id, &job_trans_raf_payload]
+        ).map_err(|e| format!("Failed to queue job_trans_raf RPA job: {}", e))?;
     }
 
     Ok(())
 }
 
 
-pub fn save_packaging_session(session: PackagingProjectSession) -> Result<(), String> {
-    let _ = init_tables();
+/// Returns the new `row_version` on success.
+/// Returns `Err("CONFLICT")` when another writer has incremented the row since the client last read it.
+pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, String> {
+    ensure_init();
     let mut client = get_connection_qms()?;
     
     let parsed_started = NaiveDateTime::parse_from_str(&session.started_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -1541,7 +1795,9 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<(), St
             .ok()
     });
 
-    client.execute(
+    let expected_version = session.row_version.unwrap_or(0);
+
+    let rows_affected = client.execute(
         "INSERT INTO packaging_project_sessions (
             session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
             inspection_date, check_wash, check_style_as_sample, check_main_label, check_flag_fit_label,
@@ -1549,11 +1805,11 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<(), St
             check_shipping_mark, check_other_1, check_other_1_label, check_other_2, check_other_2_label,
             qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
             finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
-            version, result
+            version, result, row_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, 1)
          ON CONFLICT (session_id)
-         DO UPDATE SET 
+         DO UPDATE SET
             cycle_number = $3, inspector_id = $4, status = $5, started_at = $6, ended_at = $7,
             inspection_date = CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, check_wash = $9, check_style_as_sample = $10,
             check_main_label = $11, check_flag_fit_label = $12, check_print_embro_artwork = $13, check_hangtag = $14,
@@ -1561,7 +1817,9 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<(), St
             check_other_1 = $19, check_other_1_label = $20, check_other_2 = $21, check_other_2_label = $22,
             qty_available = $23, total_store = $24, store_inspected = $25, cutting_pcs = $26, sewing_pcs = $27,
             finishing_pcs = $28, packing_pcs = $29, sampling_pcs = $30, aql = $31, level_val = $32,
-            factory_representative = $33, inspector = $34, version = $35, result = $36",
+            factory_representative = $33, inspector = $34, version = $35, result = $36,
+            row_version = packaging_project_sessions.row_version + 1
+         WHERE ($37 = 0 OR packaging_project_sessions.row_version = $37)",
         &[
             &session.session_id,
             &session.project_id,
@@ -1599,13 +1857,20 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<(), St
             &session.inspector,
             &session.version,
             &session.result,
+            &expected_version,
         ],
     ).map_err(|e| format!("Failed to save packaging session: {}", e))?;
-    Ok(())
+
+    if rows_affected == 0 {
+        return Err("CONFLICT".to_string());
+    }
+    // New sessions start at 1; existing sessions were incremented by the DO UPDATE
+    let new_version = if expected_version == 0 { 1 } else { expected_version + 1 };
+    Ok(new_version)
 }
 
 pub fn save_packaging_defect_image(image: PackagingDefectImage) -> Result<(), String> {
-    let _ = init_tables();
+    ensure_init();
     let mut client = get_connection_qms()?;
     let parsed_captured = NaiveDateTime::parse_from_str(&image.captured_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
         .or_else(|_| NaiveDateTime::parse_from_str(&image.captured_at, "%Y-%m-%dT%H:%M:%SZ"))
@@ -1632,11 +1897,20 @@ pub fn save_packaging_defect_image(image: PackagingDefectImage) -> Result<(), St
     Ok(())
 }
 
+pub fn delete_packaging_defect_image(image_id: &str) -> Result<(), String> {
+    let mut client = get_connection_qms()?;
+    client.execute(
+        "DELETE FROM packaging_defect_images WHERE image_id = $1",
+        &[&image_id],
+    ).map_err(|e| format!("Failed to delete packaging defect image: {}", e))?;
+    Ok(())
+}
+
 pub fn get_packaging_projects() -> Result<Value, String> {
-    let _ = init_tables();
+    ensure_init();
     let mut client = get_connection_qms()?;
     
-    let rows = client.query("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, verified_doc, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects ORDER BY created_at DESC", &[])
+    let rows = client.query("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, verified_doc, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects WHERE status NOT IN ('removed', 'removed_completed') ORDER BY created_at DESC", &[])
         .map_err(|e| format!("Failed to query packaging projects: {}", e))?;
         
     let mut projects = Vec::new();
@@ -1663,8 +1937,8 @@ pub fn get_packaging_projects() -> Result<Value, String> {
 
         let base_report = serde_json::Value::Null;
 
-        // Fetch base lines (CMT-Cut OData rows)
-        let base_lines_json = match get_packaging_project_reports(&project_id, None) {
+        // Fetch base lines (CMT-Cut OData rows) using the existing client connection
+        let base_lines_json = match get_packaging_project_reports_impl(&mut client, &project_id, None) {
             Ok(lines) => lines,
             Err(_) => serde_json::Value::Array(vec![]),
         };
@@ -1676,22 +1950,44 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                     check_hangtag, check_waist_tag, check_barcode, check_packing_list, check_shipping_mark,
                     check_other_1, check_other_1_label, check_other_2, check_other_2_label,
                     qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
-                    aql, level_val, factory_representative, inspector, version, result
+                    aql, level_val, factory_representative, inspector, version, result,
+                    approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature
              FROM packaging_project_sessions 
              WHERE project_id = $1 
              ORDER BY cycle_number ASC",
             &[&project_id]
         ).map_err(|e| format!("Failed to query sessions for {}: {}", project_id, e))?;
 
+        // Batch-fetch all deduction lines for this project's sessions in one query
+        let session_ids_batch: Vec<String> = session_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        let mut all_deduction_map: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+        if !session_ids_batch.is_empty() {
+            if let Ok(dl_batch) = client.query(
+                "SELECT session_id, id::text, description, amount, created_by, created_at::text FROM packaging_session_deduction_lines WHERE session_id = ANY($1) ORDER BY created_at ASC",
+                &[&session_ids_batch],
+            ) {
+                for r in dl_batch {
+                    let sid: String = r.get(0);
+                    all_deduction_map.entry(sid).or_default().push(serde_json::json!({
+                        "id": r.get::<_, Option<String>>(1),
+                        "description": r.get::<_, String>(2),
+                        "amount": r.get::<_, f64>(3),
+                        "created_by": r.get::<_, Option<String>>(4),
+                        "created_at": r.get::<_, Option<String>>(5),
+                    }));
+                }
+            }
+        }
+
         let mut sessions = Vec::new();
-        for s_row in session_rows {
+        for s_row in &session_rows {
             let session_id: String = s_row.get(0);
             let s_started: NaiveDateTime = s_row.get(4);
             let s_ended: Option<NaiveDateTime> = s_row.get(5);
             let s_inspect_date: Option<chrono::NaiveDate> = s_row.get(6);
 
-            // Fetch session report lines (CMT-Pak lines for this session)
-            let mut session_lines_json = match get_packaging_project_reports(&project_id, Some(&session_id)) {
+            // Fetch session report lines (CMT-Pak lines for this session) using the existing client connection
+            let mut session_lines_json = match get_packaging_project_reports_impl(&mut client, &project_id, Some(&session_id)) {
                 Ok(lines) => lines,
                 Err(_) => serde_json::Value::Array(vec![]),
             };
@@ -1720,12 +2016,16 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                         &[&session_id, &project_id]
                     );
 
-                    // Re-query the report lines after duplication
-                    if let Ok(lines) = get_packaging_project_reports(&project_id, Some(&session_id)) {
+                    // Re-query the report lines after duplication using the existing client connection
+                    if let Ok(lines) = get_packaging_project_reports_impl(&mut client, &project_id, Some(&session_id)) {
                         session_lines_json = lines;
                     }
                 }
             }
+
+            let deduction_lines_json = serde_json::Value::Array(
+                all_deduction_map.get(&session_id).cloned().unwrap_or_default()
+            );
 
             sessions.push(serde_json::json!({
                 "session_id": session_id,
@@ -1764,7 +2064,16 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                 "inspector": s_row.get::<_, Option<String>>(32),
                 "version": s_row.get::<_, Option<String>>(33),
                 "result": s_row.get::<_, Option<String>>(34),
-                "report_lines": session_lines_json
+                "approval_status": s_row.get::<_, Option<String>>(35),
+                "approved_by": s_row.get::<_, Option<String>>(36),
+                "approved_at": s_row.get::<_, Option<String>>(37),
+                "approval_source": s_row.get::<_, Option<String>>(38),
+                "approval_token": s_row.get::<_, Option<String>>(39),
+                "approval_email": s_row.get::<_, Option<String>>(40),
+                "approval_signature": s_row.get::<_, Option<String>>(41),
+                "ho_approval_signature": s_row.get::<_, Option<String>>(42),
+                "report_lines": session_lines_json,
+                "deduction_lines": deduction_lines_json
             }));
         }
 
@@ -1793,6 +2102,31 @@ pub fn get_packaging_projects() -> Result<Value, String> {
             }));
         }
 
+        let fabric_lines_json: serde_json::Value = match client.query(
+            "SELECT id::text, label, fabric_sent, consumption_plan, cutt_plan, actual_consumption, short_roll, sisa_kain, kepala_kain, return_kain, created_by, created_at::text, production_group, overconsumption, fabric_price, deduction FROM packaging_project_fabric_lines WHERE project_id = $1 ORDER BY created_at ASC",
+            &[&project_id],
+        ) {
+            Ok(fl_rows) => serde_json::Value::Array(fl_rows.iter().map(|r| serde_json::json!({
+                "id": r.get::<_, Option<String>>(0),
+                "label": r.get::<_, Option<String>>(1),
+                "fabric_sent": r.get::<_, f64>(2),
+                "consumption_plan": r.get::<_, f64>(3),
+                "cutt_plan": r.get::<_, f64>(4),
+                "actual_consumption": r.get::<_, f64>(5),
+                "short_roll": r.get::<_, f64>(6),
+                "sisa_kain": r.get::<_, f64>(7),
+                "kepala_kain": r.get::<_, f64>(8),
+                "return_kain": r.get::<_, f64>(9),
+                "created_by": r.get::<_, Option<String>>(10),
+                "created_at": r.get::<_, Option<String>>(11),
+                "production_group": r.get::<_, Option<String>>(12),
+                "overconsumption": r.get::<_, Option<f64>>(13),
+                "fabric_price": r.get::<_, Option<f64>>(14),
+                "deduction": r.get::<_, Option<f64>>(15),
+            })).collect()),
+            Err(_) => serde_json::Value::Array(vec![]),
+        };
+
         projects.push(serde_json::json!({
             "project_id": project_id,
             "plm_id": plm_id,
@@ -1816,11 +2150,444 @@ pub fn get_packaging_projects() -> Result<Value, String> {
             "base_report": base_report,
             "base_lines": base_lines_json,
             "sessions": sessions,
-            "defect_images": defect_images
+            "defect_images": defect_images,
+            "fabric_lines": fabric_lines_json
         }));
     }
 
     Ok(serde_json::Value::Array(projects))
+}
+
+pub fn get_packaging_projects_summary() -> Result<Value, String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    
+    let rows = client.query("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, verified_doc, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects WHERE status NOT IN ('removed', 'removed_completed') ORDER BY created_at DESC", &[])
+        .map_err(|e| format!("Failed to query packaging projects summary: {}", e))?;
+
+    let mut projects = Vec::new();
+    for row in rows {
+        let project_id: String = row.get(0);
+        let plm_id: String = row.get(1);
+        let brand: String = row.get(2);
+        let season: String = row.get(3);
+        let article_name: String = row.get(4);
+        let production_group: String = row.get(5);
+        let po_info: Option<String> = row.get(6);
+        let po_qty: Option<f64> = row.get(7);
+        let po_plan_date: Option<String> = row.get(8);
+        let po_vendor: Option<String> = row.get(9);
+        let status: String = row.get(10);
+        let cmt_cut_job_id: Option<String> = row.get(11);
+        let cmt_pak_job_id: Option<String> = row.get(12);
+        let sales_price: Option<f64> = row.get(13);
+        let verified_doc: Option<String> = row.get(14);
+        let has_deduction: bool = row.get(15);
+        let deduction_amount: f64 = row.get(16);
+        let created_at: NaiveDateTime = row.get(17);
+        let updated_at: NaiveDateTime = row.get(18);
+
+        // Fetch minimal session summaries
+        let session_rows = client.query(
+            "SELECT session_id, cycle_number, status, started_at, inspection_date, version, result
+             FROM packaging_project_sessions 
+             WHERE project_id = $1 
+             ORDER BY cycle_number ASC",
+            &[&project_id]
+        ).map_err(|e| format!("Failed to query session summaries for {}: {}", project_id, e))?;
+
+        let mut sessions = Vec::new();
+        for s_row in session_rows {
+            let session_id: String = s_row.get(0);
+            let s_started: NaiveDateTime = s_row.get(3);
+            let s_inspect_date: Option<chrono::NaiveDate> = s_row.get(4);
+
+            sessions.push(serde_json::json!({
+                "session_id": session_id,
+                "project_id": project_id,
+                "cycle_number": s_row.get::<_, i32>(1),
+                "status": s_row.get::<_, String>(2),
+                "started_at": s_started.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+                "inspection_date": s_inspect_date.map(|d| d.format("%Y-%m-%d").to_string()),
+                "version": s_row.get::<_, Option<String>>(5),
+                "result": s_row.get::<_, Option<String>>(6),
+            }));
+        }
+
+        let fabric_lines_json: serde_json::Value = match client.query(
+            "SELECT id::text, label, fabric_sent, consumption_plan, cutt_plan, actual_consumption, short_roll, sisa_kain, kepala_kain, return_kain, created_by, created_at::text, production_group, overconsumption, fabric_price, deduction FROM packaging_project_fabric_lines WHERE project_id = $1 ORDER BY created_at ASC",
+            &[&project_id],
+        ) {
+            Ok(fl_rows) => serde_json::Value::Array(fl_rows.iter().map(|r| serde_json::json!({
+                "id": r.get::<_, Option<String>>(0),
+                "label": r.get::<_, Option<String>>(1),
+                "fabric_sent": r.get::<_, f64>(2),
+                "consumption_plan": r.get::<_, f64>(3),
+                "cutt_plan": r.get::<_, f64>(4),
+                "actual_consumption": r.get::<_, f64>(5),
+                "short_roll": r.get::<_, f64>(6),
+                "sisa_kain": r.get::<_, f64>(7),
+                "kepala_kain": r.get::<_, f64>(8),
+                "return_kain": r.get::<_, f64>(9),
+                "created_by": r.get::<_, Option<String>>(10),
+                "created_at": r.get::<_, Option<String>>(11),
+                "production_group": r.get::<_, Option<String>>(12),
+                "overconsumption": r.get::<_, Option<f64>>(13),
+                "fabric_price": r.get::<_, Option<f64>>(14),
+                "deduction": r.get::<_, Option<f64>>(15),
+            })).collect()),
+            Err(_) => serde_json::Value::Array(vec![]),
+        };
+
+        projects.push(serde_json::json!({
+            "project_id": project_id,
+            "plm_id": plm_id,
+            "brand": brand,
+            "season": season,
+            "article_name": article_name,
+            "production_group": production_group,
+            "po_info": po_info,
+            "po_qty": po_qty,
+            "po_plan_date": po_plan_date,
+            "po_vendor": po_vendor,
+            "status": status,
+            "cmt_cut_job_id": cmt_cut_job_id,
+            "cmt_pak_job_id": cmt_pak_job_id,
+            "sales_price": sales_price,
+            "verified_doc": verified_doc,
+            "has_deduction": has_deduction,
+            "deduction_amount": deduction_amount,
+            "created_at": created_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+            "updated_at": updated_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+            "sessions": sessions,
+            "fabric_lines": fabric_lines_json
+        }));
+    }
+
+    Ok(serde_json::Value::Array(projects))
+}
+
+pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    
+    let row = client.query_one("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, verified_doc, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects WHERE project_id = $1", &[&project_id])
+        .map_err(|e| format!("Failed to query packaging project details: {}", e))?;
+        
+    let project_id: String = row.get(0);
+    let plm_id: String = row.get(1);
+    let brand: String = row.get(2);
+    let season: String = row.get(3);
+    let article_name: String = row.get(4);
+    let production_group: String = row.get(5);
+    let po_info: Option<String> = row.get(6);
+    let po_qty: Option<f64> = row.get(7);
+    let po_plan_date: Option<String> = row.get(8);
+    let po_vendor: Option<String> = row.get(9);
+    let status: String = row.get(10);
+    let cmt_cut_job_id: Option<String> = row.get(11);
+    let cmt_pak_job_id: Option<String> = row.get(12);
+    let sales_price: Option<f64> = row.get(13);
+    let verified_doc: Option<String> = row.get(14);
+    let has_deduction: bool = row.get(15);
+    let deduction_amount: f64 = row.get(16);
+    let created_at: NaiveDateTime = row.get(17);
+    let updated_at: NaiveDateTime = row.get(18);
+
+    let base_report = serde_json::Value::Null;
+
+    // Fetch base lines (CMT-Cut OData rows) using the existing client connection
+    let base_lines_json = match get_packaging_project_reports_impl(&mut client, &project_id, None) {
+        Ok(lines) => lines,
+        Err(_) => serde_json::Value::Array(vec![]),
+    };
+
+    // Fetch sessions for this project
+    let session_rows = client.query(
+        "SELECT session_id, cycle_number, inspector_id, status, started_at, ended_at, inspection_date,
+                check_wash, check_style_as_sample, check_main_label, check_flag_fit_label, check_print_embro_artwork,
+                check_hangtag, check_waist_tag, check_barcode, check_packing_list, check_shipping_mark,
+                check_other_1, check_other_1_label, check_other_2, check_other_2_label,
+                qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
+                aql, level_val, factory_representative, inspector, version, result,
+                approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
+                row_version
+         FROM packaging_project_sessions
+         WHERE project_id = $1
+         ORDER BY cycle_number ASC",
+        &[&project_id]
+    ).map_err(|e| format!("Failed to query sessions for {}: {}", project_id, e))?;
+
+    // Batch-fetch all deduction lines for this project's sessions in one query
+    let session_ids_batch: Vec<String> = session_rows.iter().map(|r| r.get::<_, String>(0)).collect();
+    let mut all_deduction_map: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+    if !session_ids_batch.is_empty() {
+        if let Ok(dl_batch) = client.query(
+            "SELECT session_id, id::text, description, amount, created_by, created_at::text FROM packaging_session_deduction_lines WHERE session_id = ANY($1) ORDER BY created_at ASC",
+            &[&session_ids_batch],
+        ) {
+            for r in dl_batch {
+                let sid: String = r.get(0);
+                all_deduction_map.entry(sid).or_default().push(serde_json::json!({
+                    "id": r.get::<_, Option<String>>(1),
+                    "description": r.get::<_, String>(2),
+                    "amount": r.get::<_, f64>(3),
+                    "created_by": r.get::<_, Option<String>>(4),
+                    "created_at": r.get::<_, Option<String>>(5),
+                }));
+            }
+        }
+    }
+
+    let mut sessions = Vec::new();
+    for s_row in &session_rows {
+        let session_id: String = s_row.get(0);
+        let s_started: NaiveDateTime = s_row.get(4);
+        let s_ended: Option<NaiveDateTime> = s_row.get(5);
+        let s_inspect_date: Option<chrono::NaiveDate> = s_row.get(6);
+
+        // Fetch session report lines (CMT-Pak lines for this session) using the existing client connection
+        let mut session_lines_json = match get_packaging_project_reports_impl(&mut client, &project_id, Some(&session_id)) {
+            Ok(lines) => lines,
+            Err(_) => serde_json::Value::Array(vec![]),
+        };
+
+        // Auto-recovery safety fallback: if session has 0 lines, populate it by duplicating INITIAL_PAK lines
+        if let Some(arr) = session_lines_json.as_array() {
+            if arr.is_empty() {
+                let _ = client.execute(
+                    "INSERT INTO packaging_project_reports (
+                        report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
+                        item_id, size_val, global_display_order, reject_produksi, reject_finishing,
+                        reject_embro, qty_order, total_qty_sample, barang_hilang, reject_cutting,
+                        total_reject_qty, reject_printing, ref_rec_id, total_good_qty, reject_sewing,
+                        reject_washing, gramasi, btj, reject_bahan, session_qty, session_version, created_at
+                     )
+                     SELECT 
+                        $1 || '_LINE_' || (row_number() OVER (ORDER BY line_no ASC, global_display_order ASC))::text, 
+                        $1, 
+                        project_id, data_area_id, line_no, job_transaction_id,
+                        item_id, size_val, global_display_order, 0, 0,
+                        0, qty_order, total_qty_sample, 0, 0,
+                        total_reject_qty, 0, ref_rec_id, total_good_qty, 0,
+                        0, gramasi, 0, 0, 0.0, 'v1.0', NOW()
+                     FROM packaging_project_reports
+                     WHERE project_id = $2 AND session_id = 'INITIAL_PAK'",
+                    &[&session_id, &project_id]
+                );
+
+                // Re-query the report lines after duplication using the existing client connection
+                if let Ok(lines) = get_packaging_project_reports_impl(&mut client, &project_id, Some(&session_id)) {
+                    session_lines_json = lines;
+                }
+            }
+        }
+
+        let deduction_lines_json = serde_json::Value::Array(
+            all_deduction_map.get(&session_id).cloned().unwrap_or_default()
+        );
+
+        sessions.push(serde_json::json!({
+            "session_id": session_id,
+            "project_id": project_id,
+            "cycle_number": s_row.get::<_, i32>(1),
+            "inspector_id": s_row.get::<_, String>(2),
+            "status": s_row.get::<_, String>(3),
+            "started_at": s_started.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+            "ended_at": s_ended.map(|t| t.format("%Y-%m-%dT%H:%M:%S.000Z").to_string()),
+            "inspection_date": s_inspect_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            "check_wash": s_row.get::<_, bool>(7),
+            "check_style_as_sample": s_row.get::<_, bool>(8),
+            "check_main_label": s_row.get::<_, bool>(9),
+            "check_flag_fit_label": s_row.get::<_, bool>(10),
+            "check_print_embro_artwork": s_row.get::<_, bool>(11),
+            "check_hangtag": s_row.get::<_, bool>(12),
+            "check_waist_tag": s_row.get::<_, bool>(13),
+            "check_barcode": s_row.get::<_, bool>(14),
+            "check_packing_list": s_row.get::<_, bool>(15),
+            "check_shipping_mark": s_row.get::<_, bool>(16),
+            "check_other_1": s_row.get::<_, bool>(17),
+            "check_other_1_label": s_row.get::<_, Option<String>>(18),
+            "check_other_2": s_row.get::<_, bool>(19),
+            "check_other_2_label": s_row.get::<_, Option<String>>(20),
+            "qty_available": s_row.get::<_, i32>(21),
+            "total_store": s_row.get::<_, i32>(22),
+            "store_inspected": s_row.get::<_, i32>(23),
+            "cutting_pcs": s_row.get::<_, i32>(24),
+            "sewing_pcs": s_row.get::<_, i32>(25),
+            "finishing_pcs": s_row.get::<_, i32>(26),
+            "packing_pcs": s_row.get::<_, i32>(27),
+            "sampling_pcs": s_row.get::<_, i32>(28),
+            "aql": s_row.get::<_, f64>(29),
+            "level_val": s_row.get::<_, f64>(30),
+            "factory_representative": s_row.get::<_, Option<String>>(31),
+            "inspector": s_row.get::<_, Option<String>>(32),
+            "version": s_row.get::<_, Option<String>>(33),
+            "result": s_row.get::<_, Option<String>>(34),
+            "approval_status": s_row.get::<_, Option<String>>(35),
+            "approved_by": s_row.get::<_, Option<String>>(36),
+            "approved_at": s_row.get::<_, Option<String>>(37),
+            "approval_source": s_row.get::<_, Option<String>>(38),
+            "approval_token": s_row.get::<_, Option<String>>(39),
+            "approval_email": s_row.get::<_, Option<String>>(40),
+            "approval_signature": s_row.get::<_, Option<String>>(41),
+            "ho_approval_signature": s_row.get::<_, Option<String>>(42),
+            "row_version": s_row.get::<_, Option<i32>>(43),
+            "report_lines": session_lines_json,
+            "deduction_lines": deduction_lines_json
+        }));
+    }
+
+    // Fetch defect images for this project
+    let image_rows = client.query(
+        "SELECT image_id, session_id, image_path, defect_type, description, major, minor, captured_at 
+         FROM packaging_defect_images 
+         WHERE project_id = $1 
+         ORDER BY captured_at DESC",
+        &[&project_id]
+    ).map_err(|e| format!("Failed to query images for {}: {}", project_id, e))?;
+
+    let mut defect_images = Vec::new();
+    for img_row in image_rows {
+        let img_captured: NaiveDateTime = img_row.get(7);
+        defect_images.push(serde_json::json!({
+            "image_id": img_row.get::<_, String>(0),
+            "project_id": project_id,
+            "session_id": img_row.get::<_, Option<String>>(1),
+            "image_path": img_row.get::<_, String>(2),
+            "defect_type": img_row.get::<_, String>(3),
+            "description": img_row.get::<_, Option<String>>(4),
+            "major": img_row.get::<_, i32>(5),
+            "minor": img_row.get::<_, i32>(6),
+            "captured_at": img_captured.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+        }));
+    }
+
+    let fabric_lines_json: serde_json::Value = match client.query(
+        "SELECT id::text, label, fabric_sent, consumption_plan, cutt_plan, actual_consumption, short_roll, sisa_kain, kepala_kain, return_kain, created_by, created_at::text, production_group, overconsumption, fabric_price, deduction FROM packaging_project_fabric_lines WHERE project_id = $1 ORDER BY created_at ASC",
+        &[&project_id],
+    ) {
+        Ok(fl_rows) => serde_json::Value::Array(fl_rows.iter().map(|r| serde_json::json!({
+            "id": r.get::<_, Option<String>>(0),
+            "label": r.get::<_, Option<String>>(1),
+            "fabric_sent": r.get::<_, f64>(2),
+            "consumption_plan": r.get::<_, f64>(3),
+            "cutt_plan": r.get::<_, f64>(4),
+            "actual_consumption": r.get::<_, f64>(5),
+            "short_roll": r.get::<_, f64>(6),
+            "sisa_kain": r.get::<_, f64>(7),
+            "kepala_kain": r.get::<_, f64>(8),
+            "return_kain": r.get::<_, f64>(9),
+            "created_by": r.get::<_, Option<String>>(10),
+            "created_at": r.get::<_, Option<String>>(11),
+            "production_group": r.get::<_, Option<String>>(12),
+            "overconsumption": r.get::<_, Option<f64>>(13),
+            "fabric_price": r.get::<_, Option<f64>>(14),
+            "deduction": r.get::<_, Option<f64>>(15),
+        })).collect()),
+        Err(_) => serde_json::Value::Array(vec![]),
+    };
+
+    let remarks_text: Option<String> = match client.query_opt(
+        "SELECT remarks FROM packaging_project_remarks WHERE production_group = $1",
+        &[&production_group],
+    ) {
+        Ok(Some(row)) => row.get(0),
+        _ => None,
+    };
+
+    Ok(serde_json::json!({
+        "project_id": project_id,
+        "plm_id": plm_id,
+        "brand": brand,
+        "season": season,
+        "article_name": article_name,
+        "production_group": production_group,
+        "po_info": po_info,
+        "po_qty": po_qty,
+        "po_plan_date": po_plan_date,
+        "po_vendor": po_vendor,
+        "status": status,
+        "cmt_cut_job_id": cmt_cut_job_id,
+        "cmt_pak_job_id": cmt_pak_job_id,
+        "sales_price": sales_price,
+        "verified_doc": verified_doc,
+        "has_deduction": has_deduction,
+        "deduction_amount": deduction_amount,
+        "created_at": created_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+        "updated_at": updated_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+        "base_report": base_report,
+        "base_lines": base_lines_json,
+        "sessions": sessions,
+        "defect_images": defect_images,
+        "fabric_lines": fabric_lines_json,
+        "remarks": remarks_text
+    }))
+}
+
+pub fn read_offline_projects_cache(app: AppHandle) -> Result<Value, String> {
+    let cache_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let cache_path = cache_dir.join("packaging_projects_cache.json");
+    
+    if !cache_path.exists() {
+        return Ok(serde_json::json!([]));
+    }
+    
+    let content = std::fs::read_to_string(&cache_path)
+        .map_err(|e| format!("Failed to read cache file: {}", e))?;
+        
+    let val: Value = serde_json::from_str(&content).unwrap_or_else(|_| {
+        println!("Warning: Cache file is corrupted, returning empty array");
+        serde_json::json!([])
+    });
+    
+    Ok(val)
+}
+
+pub fn write_offline_projects_cache(app: AppHandle, data: Value) -> Result<(), String> {
+    let cache_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    
+    // Ensure parent directory exists
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create local data directory: {}", e))?;
+        
+    let cache_path = cache_dir.join("packaging_projects_cache.json");
+    
+    let content = serde_json::to_string_pretty(&data)
+        .map_err(|e| format!("Failed to serialize cache data: {}", e))?;
+        
+    std::fs::write(&cache_path, content)
+        .map_err(|e| format!("Failed to write cache file: {}", e))?;
+        
+    Ok(())
+}
+
+
+pub fn save_session_approval_info(project_id: &str, session_id: &str, approval_token: &str, approval_email: &str) -> Result<(), String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    client.execute(
+        "UPDATE packaging_project_sessions
+         SET approval_token = CAST($1::text AS uuid), approval_email = $2, approval_status = NULL,
+             approval_signature = NULL, approved_by = NULL, approved_at = NULL
+         WHERE session_id = $3 AND project_id = $4",
+        &[&approval_token, &approval_email, &session_id, &project_id]
+    ).map_err(|e| format!("Failed to update approval token and email: {}", e))?;
+    Ok(())
+}
+
+pub fn reset_session_approval_info(project_id: &str, session_id: &str) -> Result<(), String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    client.execute(
+        "UPDATE packaging_project_sessions
+         SET approval_token = NULL, approval_email = NULL, approval_status = NULL,
+             approved_by = NULL, approved_at = NULL, approval_signature = NULL,
+             ho_approval_signature = NULL
+         WHERE session_id = $1 AND project_id = $2",
+        &[&session_id, &project_id]
+    ).map_err(|e| format!("Failed to reset approval info: {}", e))?;
+    Ok(())
 }
 
 pub fn save_project_verification_doc(project_id: &str, doc_base64: &str) -> Result<(), String> {
@@ -1865,12 +2632,13 @@ pub fn refresh_packaging_project_lines(project_id: &str) -> Result<(), String> {
                     let op = rec["Operation"].as_str().unwrap_or("");
                     let job_id = rec["JobTransactionId"].as_str().map(|s| s.to_string());
                     let created_str = rec["CreatedDateTime1"].as_str().unwrap_or("");
-                    if op == "CMT-Cut" {
+                    let op_upper = op.to_uppercase();
+                    if op_upper == "CMT-CUT" {
                         if cut_job_id.is_none() || created_str > cut_created.as_str() {
                             cut_job_id = job_id;
                             cut_created = created_str.to_string();
                         }
-                    } else if op == "CMT-Pak" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
+                    } else if op_upper == "CMT-PAK" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
                         pak_job_id = job_id;
                         pak_created = created_str.to_string();
                     }
@@ -1963,24 +2731,41 @@ pub fn refresh_packaging_project_lines(project_id: &str) -> Result<(), String> {
 }
 
 pub fn delete_packaging_project(project_id: &str) -> Result<(), String> {
-    let _ = init_tables();
+    ensure_init();
     let mut client = get_connection_qms()?;
     
-    // Manually delete child records first in order to support databases without cascade constraints
-    client.execute("DELETE FROM packaging_project_reports WHERE project_id = $1", &[&project_id])
-        .map_err(|e| format!("Failed to delete reports: {}", e))?;
-        
-    client.execute("DELETE FROM packaging_defect_images WHERE project_id = $1", &[&project_id])
-        .map_err(|e| format!("Failed to delete defect images: {}", e))?;
-        
-    client.execute("DELETE FROM packaging_project_sessions WHERE project_id = $1", &[&project_id])
-        .map_err(|e| format!("Failed to delete sessions: {}", e))?;
-        
-        
-        
-    client.execute("DELETE FROM packaging_projects WHERE project_id = $1", &[&project_id])
-        .map_err(|e| format!("Failed to delete project: {}", e))?;
-        
+    client.execute(
+        "UPDATE packaging_projects SET status = CASE WHEN status = 'completed' THEN 'removed_completed' ELSE 'removed' END, updated_at = NOW() WHERE project_id = $1",
+        &[&project_id],
+    )
+    .map_err(|e| format!("Failed to update project status to removed: {}", e))?;
+
+    Ok(())
+}
+
+pub fn find_removed_project_by_prg(prg: &str) -> Result<Option<(String, String)>, String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    let rows = client.query(
+        "SELECT project_id, status FROM packaging_projects WHERE production_group = $1 AND status IN ('removed', 'removed_completed') ORDER BY updated_at DESC LIMIT 1",
+        &[&prg],
+    ).map_err(|e| format!("Failed to query removed project: {}", e))?;
+    if let Some(row) = rows.into_iter().next() {
+        let project_id: String = row.get(0);
+        let status: String = row.get(1);
+        Ok(Some((project_id, status)))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn restore_packaging_project(project_id: &str, restore_status: &str) -> Result<(), String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    client.execute(
+        "UPDATE packaging_projects SET status = $1, updated_at = NOW() WHERE project_id = $2",
+        &[&restore_status, &project_id],
+    ).map_err(|e| format!("Failed to restore packaging project: {}", e))?;
     Ok(())
 }
 
@@ -2041,7 +2826,13 @@ fn get_d365_creds() -> Result<D365Creds, String> {
 
 // Helper to execute standard curl POST requests (used for OAuth2 token acquisition)
 fn call_curl_post(url: &str, body: &str) -> Result<serde_json::Value, String> {
-    let output = std::process::Command::new("curl")
+    let mut cmd = std::process::Command::new("curl");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .arg("-s")
         .arg("-X")
         .arg("POST")
@@ -2067,7 +2858,13 @@ fn call_curl_post(url: &str, body: &str) -> Result<serde_json::Value, String> {
 
 // Helper to execute authenticated curl GET requests (used for OData endpoint queries)
 fn call_curl_get(url: &str, token: &str) -> Result<serde_json::Value, String> {
-    let output = std::process::Command::new("curl")
+    let mut cmd = std::process::Command::new("curl");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .arg("-s")
         .arg("-H")
         .arg(format!("Authorization: Bearer {}", token))
@@ -2169,20 +2966,19 @@ pub fn fetch_odata_jobs_and_lines(project_id: &str, production_group: &str) -> R
 
     for rec in records {
         let op = rec["Operation"].as_str().unwrap_or("");
+        let op_upper = op.to_uppercase();
         let job_id = rec["JobTransactionId"].as_str().map(|s| s.to_string());
         let created_str = rec["CreatedDateTime1"].as_str().unwrap_or("");
-        if op == "CMT-Cut" {
+        if op_upper == "CMT-CUT" {
             if cut_job_id.is_none() || created_str > cut_created.as_str() {
                 cut_job_id = job_id;
                 cut_created = created_str.to_string();
             }
-        } else if op == "CMT-Pak" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
+        } else if op_upper == "CMT-PAK" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
             pak_job_id = job_id;
             pak_created = created_str.to_string();
         }
     }
-
-    println!("fetch_odata_jobs_and_lines: Found cut_job_id = {:?}, pak_job_id = {:?}", cut_job_id, pak_job_id);
 
     let mut qms_client = get_connection_qms()?;
 
@@ -2221,8 +3017,6 @@ fn fetch_and_store_lines(
         .map_err(|e| format!("Failed to call lines OData: {}", e))?;
 
     let records = resp["value"].as_array().ok_or_else(|| format!("Invalid response format for JobTransactionLinesDetails: {:?}", resp))?;
-
-    println!("fetch_and_store_lines: Found {} lines for job {}", records.len(), target_job_id);
 
     // 1. Delete existing report lines for this project and session to prevent duplicate/stale records
     if let Some(sess_id) = session_id {
@@ -2333,8 +3127,7 @@ fn fetch_and_store_lines(
 }
 
 // Retrieve local packaging project report lines (either base/CMT-Cut or session/CMT-Pak lines)
-pub fn get_packaging_project_reports(project_id: &str, session_id: Option<&str>) -> Result<Value, String> {
-    let mut client = get_connection_qms()?;
+pub fn get_packaging_project_reports_impl(client: &mut Client, project_id: &str, session_id: Option<&str>) -> Result<Value, String> {
     let mut list = Vec::new();
 
     let rows = match session_id {
@@ -2401,6 +3194,11 @@ pub fn get_packaging_project_reports(project_id: &str, session_id: Option<&str>)
     }
 
     Ok(serde_json::Value::Array(list))
+}
+
+pub fn get_packaging_project_reports(project_id: &str, session_id: Option<&str>) -> Result<Value, String> {
+    let mut client = get_connection_qms()?;
+    get_packaging_project_reports_impl(&mut client, project_id, session_id)
 }
 
 // Bulk save packaging project reports
@@ -2610,6 +3408,8 @@ mod tests {
         assert!(err.contains("No active job transactions"), "Expected error message to mention No active job transactions, got: {}", err);
     }
 
+
+
     #[test]
     fn test_delete_cascade() {
         let mut client = get_connection_qms().unwrap();
@@ -2639,8 +3439,13 @@ mod tests {
         client.execute(
             "INSERT INTO packaging_project_reports (report_id, session_id, project_id) VALUES ($1, $2, $3)",
             &[&format!("REP-{}", pid), &sid, &pid]
-        ).unwrap();        // Try to delete the project
+        ).unwrap();
+        
+        // Try to delete the project
         let delete_res = delete_packaging_project(pid);
         assert!(delete_res.is_ok(), "Cascade delete failed: {:?}", delete_res);
     }
+
 }
+
+
