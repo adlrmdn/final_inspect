@@ -117,7 +117,38 @@ export const PrintReport: React.FC<PrintReportProps> = ({
   };
 
   // Sizing matrix data mapping
-  const reportLines = activeSession.report_lines || [];
+  const compareSizes = (aStr: string, bStr: string): number => {
+    const cleanA = (aStr || '').trim().toUpperCase();
+    const cleanB = (bStr || '').trim().toUpperCase();
+
+    const numA = parseFloat(cleanA);
+    const numB = parseFloat(cleanB);
+
+    const isNumA = !isNaN(numA);
+    const isNumB = !isNaN(numB);
+
+    if (isNumA && isNumB) {
+      if (numA !== numB) return numA - numB;
+      return cleanA.localeCompare(cleanB);
+    }
+    if (isNumA && !isNumB) return -1;
+    if (!isNumA && isNumB) return 1;
+
+    const sizeOrder = [
+      '5XS', '4XS', '3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', 'XXXL', '4XL', '5XL', '6XL'
+    ];
+
+    const idxA = sizeOrder.indexOf(cleanA);
+    const idxB = sizeOrder.indexOf(cleanB);
+
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1 && idxB === -1) return -1;
+    if (idxA === -1 && idxB !== -1) return 1;
+
+    return cleanA.localeCompare(cleanB);
+  };
+
+  const reportLines = [...(activeSession.report_lines || [])].sort((a: any, b: any) => compareSizes(a.size_val, b.size_val));
   
   // Calculate Totals for the Sizing Matrix Table
   let sumOrderQty = 0;

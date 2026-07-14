@@ -1,4 +1,4 @@
-package com.temporary.exampleapp
+package com.temporary.finalinspect
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge

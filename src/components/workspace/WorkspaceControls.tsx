@@ -60,6 +60,8 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
 }) => {
   const [showPreview, setShowPreview] = useState(false);
   const [isSendEmailOpen, setIsSendEmailOpen] = useState(false);
+  const [showApprovalDetail, setShowApprovalDetail] = useState(false);
+  const [showHoApprovalDetail, setShowHoApprovalDetail] = useState(false);
   const [recipientInput, setRecipientInput] = useState('');
   const [subjectInput, setSubjectInput] = useState('');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
@@ -83,6 +85,17 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   const isOnlineRef = useRef<boolean>(isOnline);
   useEffect(() => { isOnlineRef.current = isOnline; }, [isOnline]);
 
+  // Derived verification state — used both in the Verify button IIFE and to gate Complete & Sync.
+  const isStage1Done = !!(activeSession && (
+    activeSession.approval_status === 'approved' ||
+    (activeSession.approval_signature && activeSession.approval_signature.toLowerCase().includes('digitally signed'))
+  ));
+  // Stage 2 (HO) writes either 'Digitally Signed:...' or 'Rejected:...' into ho_approval_signature.
+  // Check the content, not just presence, so a rejection doesn't count as approved.
+  const isStage2Done = !!(activeSession?.ho_approval_signature?.includes('Digitally Signed:'));
+  const isHoRejected = !!(activeSession?.ho_approval_signature?.includes('Rejected:'));
+  const isFullyVerified = isStage1Done && isStage2Done;
+
   useEffect(() => {
     const currentSessionId = activeSession?.session_id || null;
     const currentHoSig = activeSession?.ho_approval_signature || null;
@@ -94,13 +107,15 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
       pendingCatchUpRef.current = true;
     }
 
-    // Case A: live detection — sig appeared on the currently-open session
-    const isLiveDetection = !sessionChanged && sigChanged && !!currentHoSig;
+    const hoActuallySigned = !!currentHoSig && currentHoSig.includes('Digitally Signed:');
+
+    // Case A: live detection — a genuine HO signature appeared (not a rejection)
+    const isLiveDetection = !sessionChanged && sigChanged && hoActuallySigned;
 
     // Case B: catch-up — only fires after verified_doc dep changes (background DB refresh lands),
     // so the effect cannot race with the tempDefectImages clear that happens on project open.
     const needsCatchUp = !sessionChanged && pendingCatchUpRef.current
-      && !!currentHoSig && vendorSigned && !activePackagingProject?.verified_doc;
+      && hoActuallySigned && vendorSigned && !activePackagingProject?.verified_doc;
 
     if (isLiveDetection || needsCatchUp) {
       pendingCatchUpRef.current = false;
@@ -154,10 +169,19 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
         approvalEmail: email
       });
 
-      // 1. Generate the PDF of the report view programmatically
+      // 1. Generate the PDF of the report view programmatically.
+      // Strip rejection fields from the session before rendering — the DB was already
+      // cleared by save_session_approval_info above, but the prop still carries old state.
+      const sessionForPdf = {
+        ...activeSession,
+        approval_status: null,
+        approval_signature: null,
+        approved_by: null,
+        approved_at: null,
+      };
       const reportPdfBase64 = await generateReportPdfBase64(
         activePackagingProject,
-        activeSession,
+        sessionForPdf,
         getCycleName,
         tempDefectImages
       );
@@ -428,14 +452,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
 
             {/* Verify / Verified Digital Signature flow */}
             {(() => {
-              const signature = activeSession?.approval_signature || '';
-              const isStage1Done = activeSession && (
-                activeSession.approval_status === 'approved' ||
-                (signature && signature.toLowerCase().includes('digitally signed'))
-              );
               const isRejected = activeSession?.approval_status === 'rejected';
-              const isStage2Done = !!(activeSession?.ho_approval_signature);
-              const isFullyVerified = isStage1Done && isStage2Done;
               const isAwaitingStage1 = !isStage1Done && !isRejected && !!(activeSession?.approval_token);
 
               if (isFullyVerified) {
@@ -470,9 +487,78 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                     Verified
                   </button>
                 );
+              } else if (isHoRejected) {
+                const canReVerify = isOnline && !isProcessing;
+                return (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span
+                      style={{
+                        height: '32px',
+                        boxSizing: 'border-box',
+                        padding: '0 0.85rem',
+                        fontSize: '0.72rem',
+                        color: '#EF4444',
+                        border: '1.5px solid rgba(239, 68, 68, 0.35)',
+                        background: 'rgba(239, 68, 68, 0.06)',
+                        fontWeight: 800,
+                        borderRadius: '10px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: '1',
+                        gap: '0.25rem',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="15" y1="9" x2="9" y2="15" />
+                        <line x1="9" y1="9" x2="15" y2="15" />
+                      </svg>
+                      HO Rejected
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-electric-outline"
+                      disabled={!canReVerify}
+                      onClick={() => {
+                        setRecipientInput('');
+                        setSubjectInput(`[Inspection Report] ${activePackagingProject.article_name} - Version ${getCycleName(activeSession.cycle_number)}`);
+                        setIsSendEmailOpen(true);
+                      }}
+                      title={!isOnline ? 'You must be online to re-verify.' : 'Re-send verification email from stage 1. HO approval is also reset.'}
+                      style={{
+                        height: '32px',
+                        boxSizing: 'border-box',
+                        width: 'auto',
+                        padding: '0 0.85rem',
+                        fontSize: '0.72rem',
+                        color: canReVerify ? 'var(--royal-blue)' : 'var(--text-muted)',
+                        borderColor: canReVerify ? 'rgba(37, 99, 235, 0.28)' : 'rgba(15, 23, 42, 0.16)',
+                        background: canReVerify ? 'rgba(37, 99, 235, 0.05)' : 'rgba(15, 23, 42, 0.04)',
+                        fontWeight: 800,
+                        borderRadius: '10px',
+                        cursor: canReVerify ? 'pointer' : 'not-allowed',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: '1',
+                        gap: '0.25rem',
+                        opacity: canReVerify ? 1 : 0.5,
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="1 4 1 10 7 10" />
+                        <path d="M3.51 15a9 9 0 1 0 .49-3.5" />
+                      </svg>
+                      Re-verify
+                    </button>
+                  </div>
+                );
               } else if (isStage1Done) {
                 return (
-                  <span
+                  <button
+                    type="button"
+                    onClick={() => setShowHoApprovalDetail(true)}
                     style={{
                       height: '32px',
                       boxSizing: 'border-box',
@@ -483,6 +569,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                       background: 'rgba(217, 119, 6, 0.06)',
                       fontWeight: 800,
                       borderRadius: '10px',
+                      cursor: 'pointer',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -495,11 +582,13 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                       <polyline points="12 6 12 12 16 14" />
                     </svg>
                     Pending HO Approval
-                  </span>
+                  </button>
                 );
               } else if (isAwaitingStage1) {
                 return (
-                  <span
+                  <button
+                    type="button"
+                    onClick={() => setShowApprovalDetail(true)}
                     style={{
                       height: '32px',
                       boxSizing: 'border-box',
@@ -510,6 +599,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                       background: 'rgba(99, 102, 241, 0.06)',
                       fontWeight: 800,
                       borderRadius: '10px',
+                      cursor: 'pointer',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -522,7 +612,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                       <polyline points="12 6 12 12 16 14" />
                     </svg>
                     Awaiting Approval
-                  </span>
+                  </button>
                 );
               } else if (isRejected && activeSession && activePackagingProject.status !== 'completed') {
                 const canResend = isOnline && isBalanceMatching && !isProcessing;
@@ -615,25 +705,25 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                 <button
                   className="btn-electric-outline"
                   onClick={handleCompleteProject}
-                  disabled={!isOnline || isProcessing}
-                  title={!isOnline ? 'You must be online to complete & sync' : undefined}
+                  disabled={!isOnline || isProcessing || !isFullyVerified}
+                  title={!isOnline ? 'You must be online to complete & sync' : !isFullyVerified ? 'Both stage 1 and HO approval must be completed before syncing.' : undefined}
                   style={{
                     height: '32px',
                     boxSizing: 'border-box',
                     width: 'auto',
                     padding: '0 0.85rem',
                     fontSize: '0.72rem',
-                    color: !isOnline || isProcessing ? 'var(--text-muted)' : '#10B981',
-                    borderColor: !isOnline || isProcessing ? 'rgba(15, 23, 42, 0.16)' : 'rgba(16, 185, 129, 0.28)',
-                    background: !isOnline || isProcessing ? 'rgba(15, 23, 42, 0.04)' : 'rgba(16, 185, 129, 0.05)',
+                    color: (!isOnline || isProcessing || !isFullyVerified) ? 'var(--text-muted)' : '#10B981',
+                    borderColor: (!isOnline || isProcessing || !isFullyVerified) ? 'rgba(15, 23, 42, 0.16)' : 'rgba(16, 185, 129, 0.28)',
+                    background: (!isOnline || isProcessing || !isFullyVerified) ? 'rgba(15, 23, 42, 0.04)' : 'rgba(16, 185, 129, 0.05)',
                     fontWeight: 800,
                     borderRadius: '10px',
-                    cursor: !isOnline || isProcessing ? 'not-allowed' : 'pointer',
+                    cursor: (!isOnline || isProcessing || !isFullyVerified) ? 'not-allowed' : 'pointer',
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     lineHeight: '1',
-                    opacity: !isOnline || isProcessing ? 0.5 : 1,
+                    opacity: (!isOnline || isProcessing || !isFullyVerified) ? 0.5 : 1,
                   }}
                 >
                   Complete & Sync RAF
@@ -876,6 +966,213 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
       )}
 
       {/* Email Dispatcher Modal */}
+      {showApprovalDetail && activeSession && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.6)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 9999,
+            padding: '2rem',
+          }}
+          onClick={() => setShowApprovalDetail(false)}
+        >
+          <div
+            style={{
+              position: 'relative',
+              backgroundColor: '#ffffff',
+              borderRadius: '16px',
+              padding: '1.5rem',
+              width: '420px',
+              maxWidth: '95%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(15,23,42,0.08)', paddingBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 800, color: '#0F172A', fontFamily: "'Outfit', sans-serif" }}>Approval Pending</h3>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 600 }}>Awaiting digital signature from approver</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowApprovalDetail(false)}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '1.25rem', fontWeight: 'bold', color: '#64748B' }}
+              >✕</button>
+            </div>
+
+            {/* Detail rows */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sent To</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0F172A' }}>{activeSession.approval_email || '—'}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Session</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0F172A' }}>{getCycleName(activeSession.cycle_number)} — {activePackagingProject.article_name}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.65rem 0.85rem', borderRadius: '10px', background: 'rgba(99,102,241,0.06)', border: '1.5px solid rgba(99,102,241,0.18)' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366F1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                </svg>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6366F1' }}>Link sent — waiting for the approver to sign digitally.</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem', borderTop: '1px solid rgba(15,23,42,0.08)', paddingTop: '0.85rem' }}>
+              <button
+                type="button"
+                onClick={() => setShowApprovalDetail(false)}
+                style={{ padding: '0.5rem 1rem', fontSize: '0.72rem', fontWeight: 700, border: '1.5px solid rgba(15,23,42,0.15)', borderRadius: '8px', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                disabled={!isOnline || isProcessing}
+                onClick={async () => {
+                  try {
+                    await invoke('reset_session_approval_info', {
+                      projectId: activePackagingProject.project_id,
+                      sessionId: activeSession.session_id,
+                    });
+                    setShowApprovalDetail(false);
+                    await onRefreshProject();
+                  } catch (e) {
+                    await showProfessionalAlert('Recall Failed', String(e), 'danger');
+                  }
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  border: '1.5px solid rgba(217,119,6,0.35)',
+                  borderRadius: '8px',
+                  background: isOnline && !isProcessing ? 'rgba(217,119,6,0.07)' : 'rgba(15,23,42,0.04)',
+                  color: isOnline && !isProcessing ? '#D97706' : 'var(--text-muted)',
+                  cursor: isOnline && !isProcessing ? 'pointer' : 'not-allowed',
+                  opacity: isOnline && !isProcessing ? 1 : 0.5,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 .49-3.5" />
+                </svg>
+                Recall
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showHoApprovalDetail && activeSession && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.6)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 9999,
+            padding: '2rem',
+          }}
+          onClick={() => setShowHoApprovalDetail(false)}
+        >
+          <div
+            style={{
+              position: 'relative',
+              backgroundColor: '#ffffff',
+              borderRadius: '16px',
+              padding: '1.5rem',
+              width: '420px',
+              maxWidth: '95%',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1.25rem',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(15,23,42,0.08)', paddingBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 800, color: '#0F172A', fontFamily: "'Outfit', sans-serif" }}>Pending HO Approval</h3>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 600 }}>Awaiting digital signature from MPG HO - MD Production</span>
+              </div>
+              <button type="button" onClick={() => setShowHoApprovalDetail(false)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: '1.25rem', fontWeight: 'bold', color: '#64748B' }}>✕</button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Stage 1 Approver</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0F172A' }}>{activeSession.approval_email || '—'}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Session</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0F172A' }}>{getCycleName(activeSession.cycle_number)} — {activePackagingProject.article_name}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.65rem 0.85rem', borderRadius: '10px', background: 'rgba(217,119,6,0.06)', border: '1.5px solid rgba(217,119,6,0.2)' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                </svg>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#D97706' }}>Stage 1 signed — waiting for HO to sign digitally.</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem', borderTop: '1px solid rgba(15,23,42,0.08)', paddingTop: '0.85rem' }}>
+              <button type="button" onClick={() => setShowHoApprovalDetail(false)} style={{ padding: '0.5rem 1rem', fontSize: '0.72rem', fontWeight: 700, border: '1.5px solid rgba(15,23,42,0.15)', borderRadius: '8px', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                Close
+              </button>
+              <button
+                type="button"
+                disabled={!isOnline || isProcessing}
+                onClick={async () => {
+                  try {
+                    await invoke('reset_session_approval_info', {
+                      projectId: activePackagingProject.project_id,
+                      sessionId: activeSession.session_id,
+                    });
+                    setShowHoApprovalDetail(false);
+                    await onRefreshProject();
+                  } catch (e) {
+                    await showProfessionalAlert('Recall Failed', String(e), 'danger');
+                  }
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  border: '1.5px solid rgba(217,119,6,0.35)',
+                  borderRadius: '8px',
+                  background: isOnline && !isProcessing ? 'rgba(217,119,6,0.07)' : 'rgba(15,23,42,0.04)',
+                  color: isOnline && !isProcessing ? '#D97706' : 'var(--text-muted)',
+                  cursor: isOnline && !isProcessing ? 'pointer' : 'not-allowed',
+                  opacity: isOnline && !isProcessing ? 1 : 0.5,
+                  display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 .49-3.5" />
+                </svg>
+                Recall
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isSendEmailOpen && (
         <div 
           style={{

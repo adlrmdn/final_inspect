@@ -913,6 +913,42 @@ pub fn get_plm_activity_items(plm_id: &str) -> Result<Vec<PlmActivityItem>, Stri
 // NEW PACKAGING QC PROJECT & SESSION OPERATIONS
 // -------------------------------------------------------------
 
+/// Server-side gate for the completed-project transition. Mirrors the console's
+/// `isFullyVerified` check (Stage 1 factory-rep signature + Stage 2 HO signature)
+/// but reads the columns the portal actually wrote in the DB, rather than trusting
+/// whatever session state the client happened to send. Without this, any caller of
+/// save_packaging_project[_db_only] could mark a project 'completed' (and trigger
+/// the RPA invoice queue) without either signature ever existing.
+fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &str) -> bool {
+    let row = client.query_opt(
+        "SELECT approval_status, approval_signature, ho_approval_signature
+         FROM packaging_project_sessions
+         WHERE project_id = $1
+         ORDER BY cycle_number DESC
+         LIMIT 1",
+        &[&project_id],
+    );
+    let row = match row {
+        Ok(Some(r)) => r,
+        _ => return false,
+    };
+    let approval_status: Option<String> = row.get(0);
+    let approval_signature: Option<String> = row.get(1);
+    let ho_approval_signature: Option<String> = row.get(2);
+
+    let stage1_done = approval_status.as_deref() == Some("approved")
+        || approval_signature
+            .as_deref()
+            .map(|s| s.to_lowercase().contains("digitally signed"))
+            .unwrap_or(false);
+    let stage2_done = ho_approval_signature
+        .as_deref()
+        .map(|s| s.contains("Digitally Signed:"))
+        .unwrap_or(false);
+
+    stage1_done && stage2_done
+}
+
 /// DB-only upsert for existing projects when D365 is unreachable.
 /// Preserves existing job IDs and sales_price; updates status/deductions/timestamp.
 fn save_packaging_project_db_only(mut client: postgres::Client, project: PackagingProject) -> Result<String, String> {
@@ -936,6 +972,10 @@ fn save_packaging_project_db_only(mut client: postgres::Client, project: Packagi
         if final_pak_job.is_none() { final_pak_job = db_pak; }
         if final_sales_price == 0.0 { final_sales_price = db_price.unwrap_or(0.0); }
         db_was_completed = db_status.as_deref() == Some("completed");
+    }
+
+    if project.status == "completed" && !db_was_completed && !latest_session_is_fully_verified(&mut client, &project_id) {
+        return Err("Cannot complete project: the latest inspection session has not been digitally signed by both the factory representative and the HO approver.".to_string());
     }
 
     let has_deduction_val = project.has_deduction.unwrap_or(false);
@@ -1161,6 +1201,11 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
 
     // Resolve project ID (use existing one if found to prevent duplicate projects when downloading again)
     let project_id = existing_project_id.clone().unwrap_or_else(|| project.project_id.clone());
+
+    let was_already_completed = existing_status.as_deref() == Some("completed");
+    if project.status == "completed" && !was_already_completed && !latest_session_is_fully_verified(&mut client, &project_id) {
+        return Err("Cannot complete project: the latest inspection session has not been digitally signed by both the factory representative and the HO approver.".to_string());
+    }
 
     // 2. Insert/upsert the project row first so foreign key constraints on details/lines succeed
     let has_deduction_val = project.has_deduction.unwrap_or(false);
@@ -1420,7 +1465,6 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
     } // end: new project seeding block
 
     // Universal RPA Queue Sync Triggers — only fire on the transition to completed, not on every re-save
-    let was_already_completed = existing_status.as_deref() == Some("completed");
     if project.status == "completed" && !was_already_completed {
         let mut rpa_client = get_connection_rpa()?;
         
@@ -2569,7 +2613,8 @@ pub fn save_session_approval_info(project_id: &str, session_id: &str, approval_t
     client.execute(
         "UPDATE packaging_project_sessions
          SET approval_token = CAST($1::text AS uuid), approval_email = $2, approval_status = NULL,
-             approval_signature = NULL, approved_by = NULL, approved_at = NULL
+             approval_signature = NULL, approved_by = NULL, approved_at = NULL,
+             ho_approval_signature = NULL
          WHERE session_id = $3 AND project_id = $4",
         &[&approval_token, &approval_email, &session_id, &project_id]
     ).map_err(|e| format!("Failed to update approval token and email: {}", e))?;

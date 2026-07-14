@@ -10,6 +10,37 @@ interface BentoInspectionCardsProps {
   handleRefetchReportLines: () => Promise<void>;
 }
 
+export const compareSizes = (aStr: string, bStr: string): number => {
+  const cleanA = (aStr || '').trim().toUpperCase();
+  const cleanB = (bStr || '').trim().toUpperCase();
+
+  const numA = parseFloat(cleanA);
+  const numB = parseFloat(cleanB);
+
+  const isNumA = !isNaN(numA);
+  const isNumB = !isNaN(numB);
+
+  if (isNumA && isNumB) {
+    if (numA !== numB) return numA - numB;
+    return cleanA.localeCompare(cleanB);
+  }
+  if (isNumA && !isNumB) return -1;
+  if (!isNumA && isNumB) return 1;
+
+  const sizeOrder = [
+    '5XS', '4XS', '3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', 'XXXL', '4XL', '5XL', '6XL'
+  ];
+
+  const idxA = sizeOrder.indexOf(cleanA);
+  const idxB = sizeOrder.indexOf(cleanB);
+
+  if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+  if (idxA !== -1 && idxB === -1) return -1;
+  if (idxA === -1 && idxB !== -1) return 1;
+
+  return cleanA.localeCompare(cleanB);
+};
+
 export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
   activePackagingProject,
   activeSession,
@@ -21,15 +52,21 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
 }) => {
   const [activeLineId, setActiveLineId] = React.useState<string | null>(null);
 
+  // Sort size values numerically/hierarchically
+  const sortedReportLines = React.useMemo(() => {
+    if (!activeSession || !activeSession.report_lines) return [];
+    return [...activeSession.report_lines].sort((a: any, b: any) => compareSizes(a.size_val, b.size_val));
+  }, [activeSession?.report_lines]);
+
   // Sync state when activeSession or report_lines load or change
   React.useEffect(() => {
-    if (activeSession && activeSession.report_lines && activeSession.report_lines.length > 0) {
-      const isValid = activeSession.report_lines.some((l: any) => l.report_id === activeLineId);
+    if (activeSession && sortedReportLines && sortedReportLines.length > 0) {
+      const isValid = sortedReportLines.some((l: any) => l.report_id === activeLineId);
       if (!isValid) {
-        setActiveLineId(activeSession.report_lines[0].report_id);
+        setActiveLineId(sortedReportLines[0].report_id);
       }
     }
-  }, [activeSession, activeLineId]);
+  }, [activeSession, sortedReportLines, activeLineId]);
 
   // Auto-fill cutting_pcs from base_lines total — runs once per session, never overwrites after that
   const cuttingAutoFilledRef = React.useRef<string | null>(null);
@@ -51,13 +88,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
 
   // Sync state when parent size tab changes (e.g. from AI commands)
   React.useEffect(() => {
-    if (selectedSizeTab && activeSession && activeSession.report_lines) {
-      const line = activeSession.report_lines.find((l: any) => l.size_val === selectedSizeTab);
+    if (selectedSizeTab && activeSession && sortedReportLines) {
+      const line = sortedReportLines.find((l: any) => l.size_val === selectedSizeTab);
       if (line && line.report_id !== activeLineId) {
         setActiveLineId(line.report_id);
       }
     }
-  }, [selectedSizeTab, activeSession]);
+  }, [selectedSizeTab, activeSession, sortedReportLines]);
 
   const cardStyle: React.CSSProperties = {
 
@@ -171,10 +208,13 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
       );
     }
 
-    const currentLineId = activeLineId || (activeSession.report_lines[0]?.report_id);
-    const lineIndex = activeSession.report_lines.findIndex((l: any) => l.report_id === currentLineId);
-    const activeLine = activeSession.report_lines[lineIndex] || activeSession.report_lines[0];
+    const currentLineId = activeLineId || (sortedReportLines[0]?.report_id);
+    const sortedLineIndex = sortedReportLines.findIndex((l: any) => l.report_id === currentLineId);
+    const activeLine = sortedReportLines[sortedLineIndex] || sortedReportLines[0];
     const currentSize = activeLine?.size_val || 'N/A';
+
+    // Find the original index in the unsorted activeSession.report_lines array for updating state
+    const lineIndex = activeSession.report_lines.findIndex((l: any) => l.report_id === currentLineId);
 
     if (!activeLine) {
       return (
@@ -302,9 +342,9 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', textAlign: 'left' }}>
         {/* Horizontal Size Tabs */}
         <div style={{ display: 'flex', gap: '0.45rem', borderBottom: '2px solid rgba(15, 23, 42, 0.12)', paddingBottom: '0.45rem', flexWrap: 'wrap' }}>
-          {activeSession.report_lines.map((line: any) => {
+          {sortedReportLines.map((line: any) => {
             const size = line.size_val || 'N/A';
-            const duplicates = activeSession.report_lines.filter((l: any) => l.size_val === size);
+            const duplicates = sortedReportLines.filter((l: any) => l.size_val === size);
             let label = size;
             if (duplicates.length > 1) {
               const occurrenceIndex = duplicates.findIndex((l: any) => l.report_id === line.report_id) + 1;

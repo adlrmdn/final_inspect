@@ -122,9 +122,6 @@ export class SyncEngine {
       // 1. Sync standard QC reports
       const pending = this.dbService.getPendingReports();
       for (const report of pending) {
-        // Latency simulation (network hop)
-        await new Promise(resolve => setTimeout(resolve, 600));
-        
         // Save to central PostgreSQL DB
         await this.dbService.saveReportToPostgres(report);
 
@@ -138,14 +135,15 @@ export class SyncEngine {
       const projects = [...PackagingService.getInstance().getStoredProjects()];
 
       for (const p of projects) {
+        let dirty = false;
+
         // Sync project header
         if (p.synced === false) {
           try {
-            await new Promise(resolve => setTimeout(resolve, 300));
             const { base_lines, sessions, defect_images, synced, ...rest } = p;
             await invoke('save_packaging_project', { project: rest });
             p.synced = true;
-            await PackagingService.getInstance().saveStoredProjects(projects);
+            dirty = true;
             this.notifyListeners();
           } catch (e) {
             console.error(`Failed to sync project ${p.project_id}:`, e);
@@ -157,14 +155,13 @@ export class SyncEngine {
           for (const s of p.sessions) {
             if (s.synced === false) {
               try {
-                await new Promise(resolve => setTimeout(resolve, 300));
                 const { report_lines, synced, ...rest } = s;
                 await invoke('save_packaging_session', { session: rest });
                 if (report_lines && report_lines.length > 0) {
                   await invoke('save_packaging_project_reports', { reports: report_lines });
                 }
                 s.synced = true;
-                await PackagingService.getInstance().saveStoredProjects(projects);
+                dirty = true;
                 this.notifyListeners();
               } catch (e) {
                 console.error(`Failed to sync session ${s.session_id}:`, e);
@@ -178,17 +175,21 @@ export class SyncEngine {
           for (const img of p.defect_images) {
             if (img.synced === false) {
               try {
-                await new Promise(resolve => setTimeout(resolve, 300));
                 const { synced, ...rest } = img;
                 await invoke('save_packaging_defect_image', { image: rest });
                 img.synced = true;
-                await PackagingService.getInstance().saveStoredProjects(projects);
+                dirty = true;
                 this.notifyListeners();
               } catch (e) {
                 console.error(`Failed to sync defect image ${img.image_id}:`, e);
               }
             }
           }
+        }
+
+        // Persist sync flags once per project, not after every item
+        if (dirty) {
+          await PackagingService.getInstance().saveStoredProjects(projects);
         }
       }
 
@@ -198,7 +199,6 @@ export class SyncEngine {
         const remainingRemovals: string[] = [];
         for (const pid of removals) {
           try {
-            await new Promise(resolve => setTimeout(resolve, 300));
             await invoke('delete_packaging_project', { projectId: pid });
           } catch (e) {
             console.error(`Failed to sync offline deletion for project ${pid}:`, e);

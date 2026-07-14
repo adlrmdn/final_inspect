@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { DatabaseService } from '../services/database_service';
 import { QCInspectionTemplate } from '../models/qc_template';
@@ -208,12 +208,20 @@ export default function FormView({
   );
   // Lock ALL versions when any session has a pending or completed verification.
   // Prevents editing older versions while a newer one is awaiting approval.
+  // Rejection of approval does not lock editing.
   const isEditLocked = isSessionVerified || !!(
-    (activePackagingProject?.sessions || []).some((s: any) =>
-      s.approval_token ||
-      s.approval_status === 'approved' ||
-      s.approval_signature?.toLowerCase().includes('digitally signed')
-    )
+    (activePackagingProject?.sessions || []).some((s: any) => {
+      const isRejected = s.approval_status === 'rejected' ||
+                         (s.ho_approval_signature && s.ho_approval_signature.includes('Rejected:'));
+      if (isRejected) {
+        return false;
+      }
+      return (
+        s.approval_token ||
+        s.approval_status === 'approved' ||
+        s.approval_signature?.toLowerCase().includes('digitally signed')
+      );
+    })
   );
   const [isChatExpanded, setIsChatExpanded] = useState<boolean>(false);
 
@@ -478,7 +486,7 @@ export default function FormView({
     if (!activePackagingProject || !activeSession) return;
     const isStage1Done = activeSession.approval_status === 'approved' ||
       activeSession.approval_signature?.toLowerCase().includes('digitally signed');
-    const isStage2Done = !!(activeSession.ho_approval_signature);
+    const isStage2Done = !!(activeSession.ho_approval_signature?.includes('Digitally Signed:'));
     if (!isStage1Done || isStage2Done) return;
 
     const interval = setInterval(async () => {
@@ -734,19 +742,17 @@ export default function FormView({
       return;
     }
 
-    const currentRep = activeSession?.factory_representative || '';
-    const isApproved = activeSession && (
+    const isStage1Done = !!(activeSession && (
       activeSession.approval_status === 'approved' ||
-      (currentRep && 
-       !currentRep.toLowerCase().includes('awaiting') && 
-       !currentRep.toLowerCase().includes('rejected') && 
-       activeSession.approval_status !== 'rejected')
-    );
+      (activeSession.approval_signature && activeSession.approval_signature.toLowerCase().includes('digitally signed'))
+    ));
+    const isStage2Done = !!(activeSession?.ho_approval_signature?.includes('Digitally Signed:'));
+    const isFullyVerified = isStage1Done && isStage2Done;
 
-    if (!isApproved) {
+    if (!isFullyVerified) {
       await showProfessionalAlert(
         'Verification Required',
-        'This project cannot be completed because the inspection has not been approved/signed by the factory representative yet. Please send the verification email and obtain approval first.',
+        'This project cannot be completed because it has not been digitally signed by both the factory representative and HO approver yet. Please send the verification email and obtain both approvals first.',
         'alert'
       );
       return;
@@ -1034,7 +1040,7 @@ export default function FormView({
       // Clone report lines
       const clonedLines = (currentSession.report_lines || []).map((line: any, idx: number) => ({
         ...line,
-        report_id: `${nextSessionId}_LINE_${idx}`,
+        report_id: `${nextSessionId}_LINE_${idx + 1}`,
         session_id: nextSessionId,
         session_qty: 0.0,
         reject_bahan: 0,
@@ -1621,12 +1627,9 @@ export default function FormView({
       (p: any) => p.production_group === rawPrg
     );
     if (existing) {
-      await showProfessionalAlert(
-        'Style Already Active',
-        `A project for style '${act.article_name}' (${rawPrg}) has already been downloaded and is active. Prohibiting duplicate downloads.`,
-        'danger'
-      );
+      // Style is already active, open it directly!
       setSelectedActivity(null);
+      handleSelectPackagingProject(existing);
       return;
     }
 
