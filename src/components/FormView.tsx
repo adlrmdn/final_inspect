@@ -573,7 +573,7 @@ export default function FormView({
       };
       let newRowVersion: number;
       try {
-        newRowVersion = await invoke<number>('save_packaging_session', { session: savedSession });
+        newRowVersion = await invoke<number>('save_packaging_session', { session: PackagingService.getInstance().sanitizeSession(savedSession) });
         setActiveSession((prev: any) => prev ? { ...prev, row_version: newRowVersion } : prev);
       } catch (saveErr: any) {
         if (String(saveErr).includes('CONFLICT')) {
@@ -1107,7 +1107,7 @@ export default function FormView({
       if (currentCycle >= 1) {
         const updatedPrevSession = { ...currentSession, status: 'completed' };
         try {
-          const closedVersion = await invoke<number>('save_packaging_session', { session: updatedPrevSession });
+          const closedVersion = await invoke<number>('save_packaging_session', { session: PackagingService.getInstance().sanitizeSession(updatedPrevSession) });
           setActiveSession((prev: any) => prev && prev.session_id === updatedPrevSession.session_id
             ? { ...prev, row_version: closedVersion } : prev);
         } catch (closeErr: any) {

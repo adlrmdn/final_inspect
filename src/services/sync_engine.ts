@@ -141,7 +141,8 @@ export class SyncEngine {
         if (p.synced === false) {
           try {
             const { base_lines, sessions, defect_images, synced, ...rest } = p;
-            await invoke('save_packaging_project', { project: rest });
+            const sanitizedProject = PackagingService.getInstance().sanitizeProject(rest);
+            await invoke('save_packaging_project', { project: sanitizedProject });
             p.synced = true;
             dirty = true;
             this.notifyListeners();
@@ -156,9 +157,11 @@ export class SyncEngine {
             if (s.synced === false) {
               try {
                 const { report_lines, synced, ...rest } = s;
-                await invoke('save_packaging_session', { session: rest });
+                const sanitizedSession = PackagingService.getInstance().sanitizeSession(rest);
+                await invoke('save_packaging_session', { session: sanitizedSession });
                 if (report_lines && report_lines.length > 0) {
-                  await invoke('save_packaging_project_reports', { reports: report_lines });
+                  const sanitizedReports = report_lines.map((l: any) => PackagingService.getInstance().sanitizeReportLine(l));
+                  await invoke('save_packaging_project_reports', { reports: sanitizedReports });
                 }
                 s.synced = true;
                 dirty = true;
@@ -176,7 +179,8 @@ export class SyncEngine {
             if (img.synced === false) {
               try {
                 const { synced, ...rest } = img;
-                await invoke('save_packaging_defect_image', { image: rest });
+                const sanitizedImage = PackagingService.getInstance().sanitizeDefectImage(rest);
+                await invoke('save_packaging_defect_image', { image: sanitizedImage });
                 img.synced = true;
                 dirty = true;
                 this.notifyListeners();

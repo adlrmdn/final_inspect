@@ -16,7 +16,7 @@ export class PackagingService {
 
   // --- PAYLOAD SANITIZATION HELPERS ---
 
-  private sanitizeProject(project: any): any {
+  public sanitizeProject(project: any): any {
     if (!project) return project;
     const p = { ...project };
     if (p.brand === undefined || p.brand === null) {
@@ -34,12 +34,14 @@ export class PackagingService {
     if (p.po_qty === '' || p.po_qty === null || p.po_qty === undefined) {
       p.po_qty = null;
     } else if (typeof p.po_qty === 'string') {
-      p.po_qty = parseFloat(p.po_qty) || null;
+      const trimmed = p.po_qty.trim();
+      p.po_qty = trimmed === '' ? null : parseFloat(trimmed) || null;
     }
     if (p.sales_price === '' || p.sales_price === null || p.sales_price === undefined) {
       p.sales_price = null;
     } else if (typeof p.sales_price === 'string') {
-      p.sales_price = parseFloat(p.sales_price) || null;
+      const trimmed = p.sales_price.trim();
+      p.sales_price = trimmed === '' ? null : parseFloat(trimmed) || null;
     }
     if (p.has_deduction === undefined || p.has_deduction === null) {
       p.has_deduction = false;
@@ -47,12 +49,13 @@ export class PackagingService {
     if (p.deduction_amount === '' || p.deduction_amount === null || p.deduction_amount === undefined) {
       p.deduction_amount = 0.0;
     } else if (typeof p.deduction_amount === 'string') {
-      p.deduction_amount = parseFloat(p.deduction_amount) || 0.0;
+      const trimmed = p.deduction_amount.trim();
+      p.deduction_amount = trimmed === '' ? 0.0 : parseFloat(trimmed) || 0.0;
     }
     return p;
   }
 
-  private sanitizeSession(session: any): any {
+  public sanitizeSession(session: any): any {
     if (!session) return session;
     const s = { ...session };
     const intFields = [
@@ -62,18 +65,30 @@ export class PackagingService {
     const floatFields = ['aql', 'level_val'];
     
     intFields.forEach(f => {
-      if (s[f] === '' || s[f] === null || s[f] === undefined) {
+      let val = s[f];
+      if (typeof val === 'string') {
+        val = val.trim();
+      }
+      if (val === '' || val === null || val === undefined) {
         s[f] = 0;
-      } else if (typeof s[f] === 'string') {
-        s[f] = parseInt(s[f], 10) || 0;
+      } else if (typeof val === 'string') {
+        s[f] = parseInt(val, 10) || 0;
+      } else {
+        s[f] = Number(val) || 0;
       }
     });
 
     floatFields.forEach(f => {
-      if (s[f] === '' || s[f] === null || s[f] === undefined) {
+      let val = s[f];
+      if (typeof val === 'string') {
+        val = val.trim();
+      }
+      if (val === '' || val === null || val === undefined) {
         s[f] = 0.0;
-      } else if (typeof s[f] === 'string') {
-        s[f] = parseFloat(s[f]) || 0.0;
+      } else if (typeof val === 'string') {
+        s[f] = parseFloat(val) || 0.0;
+      } else {
+        s[f] = Number(val) || 0.0;
       }
     });
 
@@ -97,7 +112,7 @@ export class PackagingService {
     return s;
   }
 
-  private sanitizeReportLine(line: any): any {
+  public sanitizeReportLine(line: any): any {
     if (!line) return line;
     const l = { ...line };
     const intFields = [
@@ -109,33 +124,51 @@ export class PackagingService {
     const floatFields = ['session_qty', 'gramasi'];
 
     intFields.forEach(f => {
-      if (l[f] === '' || l[f] === null || l[f] === undefined) {
+      let val = l[f];
+      if (typeof val === 'string') {
+        val = val.trim();
+      }
+      if (val === '' || val === null || val === undefined) {
         l[f] = null;
-      } else if (typeof l[f] === 'string') {
-        l[f] = parseInt(l[f], 10) || 0;
+      } else if (typeof val === 'string') {
+        l[f] = parseInt(val, 10) || 0;
+      } else {
+        l[f] = Number(val) || 0;
       }
     });
 
     floatFields.forEach(f => {
-      if (l[f] === '' || l[f] === null || l[f] === undefined) {
+      let val = l[f];
+      if (typeof val === 'string') {
+        val = val.trim();
+      }
+      if (val === '' || val === null || val === undefined) {
         l[f] = 0.0;
-      } else if (typeof l[f] === 'string') {
-        l[f] = parseFloat(l[f]) || 0.0;
+      } else if (typeof val === 'string') {
+        l[f] = parseFloat(val) || 0.0;
+      } else {
+        l[f] = Number(val) || 0.0;
       }
     });
 
     return l;
   }
 
-  private sanitizeDefectImage(image: any): any {
+  public sanitizeDefectImage(image: any): any {
     if (!image) return image;
     const img = { ...image };
     const intFields = ['major', 'minor'];
     intFields.forEach(f => {
-      if (img[f] === '' || img[f] === null || img[f] === undefined) {
+      let val = img[f];
+      if (typeof val === 'string') {
+        val = val.trim();
+      }
+      if (val === '' || val === null || val === undefined) {
         img[f] = 0;
-      } else if (typeof img[f] === 'string') {
-        img[f] = parseInt(img[f], 10) || 0;
+      } else if (typeof val === 'string') {
+        img[f] = parseInt(val, 10) || 0;
+      } else {
+        img[f] = Number(val) || 0;
       }
     });
     return img;

@@ -44,3 +44,19 @@ The Quality Control System enforces specific formalized equations for yield and 
 2. **Total Reject Quantity (`total_reject_qty` / `reject_qty`)**:
    This is the total sum of all defect types and lost garments:
    $$\text{reject\_qty} = \text{reject\_produksi} + \text{reject\_bahan} + \text{btj} + \text{barang\_hilang}$$
+
+## Data Sanitization Rules
+To prevent Rust backend deserialization panic/errors (e.g. `invalid type: string "", expected f64` during Serde operations) when fields are left blank or filled with whitespaces, a strict sanitization layer is enforced:
+1. **String Trimming**: Any text input field is trimmed of leading and trailing whitespaces.
+2. **Numeric Coercion**: If a numeric input field (e.g., AQL, inspection quantity, or defect numbers) resolves to an empty string `""` or whitespace after trimming, it is coerced to `0` or `0.0` at the React state layer and the service integration layer before saving.
+3. **Optional Database Fields**: Nullable database fields (e.g., `reject_bahan`) are set to `null` if empty, rather than an empty string.
+
+## Print Signature Workflow
+Section 5 (Conclusions) in the official printed report layout enforces a 5-column grid alignment matching corporate compliance standards:
+- **Column 1**: Overall Inspection Result (Status block: `PASSED`, `FAILED`, `PENDING`)
+- **Column 2**: `Inspected By` (Inspector role and name)
+- **Column 3**: `Confirmed By` (Factory Representative role and name)
+- **Column 4**: `Approved By` (MPG HO - MD Production role and name)
+- **Column 5**: `Authorized By` (Director role)
+
+*Note: To align with confidentiality and document standards, names are conditionally omitted from printing if no name data has been entered or signed in the database.*

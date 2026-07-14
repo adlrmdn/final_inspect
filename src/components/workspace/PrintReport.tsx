@@ -704,7 +704,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
 
       {/* Section 5: Conclusions */}
       <div className="print-section-title">5. Conclusions</div>
-      <div className="print-signatures-container" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: '12px' }}>
+      <div className="print-signatures-container" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', gap: '8px', width: 'calc(100% - 4px)', boxSizing: 'border-box' }}>
         <div className={`print-result-block ${(activeSession.result || 'pending').toLowerCase()}`}>
           <span className="print-result-title">∴ Overall Inspection Result</span>
           <span className={`print-result-value ${(activeSession.result || 'pending').toLowerCase()}`}>
@@ -715,12 +715,12 @@ export const PrintReport: React.FC<PrintReportProps> = ({
         {/* Box 1: Inspected By */}
         <div className="print-signature-box">
           <span className="print-signature-label">Inspected By</span>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '4px 0' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
             <div style={{
-              border: '1.5px solid #10B981',
+              border: '1px solid #10B981',
               borderRadius: '4px',
-              padding: '2px 4px',
-              fontSize: '0.45rem',
+              padding: '1px 3.5px',
+              fontSize: '0.38rem',
               fontWeight: 800,
               color: '#10B981',
               background: 'rgba(16, 185, 129, 0.05)',
@@ -729,7 +729,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
               display: 'inline-flex',
               alignItems: 'center',
               gap: '2px',
-              marginBottom: '2px',
+              marginBottom: '1px',
               lineHeight: '1'
             }}>
               <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}>
@@ -737,11 +737,20 @@ export const PrintReport: React.FC<PrintReportProps> = ({
               </svg>
               Digitally Signed
             </div>
-            <span style={{ fontSize: '0.42rem', color: '#64748B', fontWeight: 600 }}>
+            <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600 }}>
               {convertToUTC7(activeSession.ended_at || activeSession.started_at)}
             </span>
           </div>
-          <span className="print-signature-name">{activeSession.inspector || 'Inspector'}</span>
+          <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
+            {activeSession.inspector && (
+              <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#0F172A', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+                {activeSession.inspector}
+              </span>
+            )}
+            <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
+              Inspector
+            </span>
+          </div>
         </div>
 
         {/* Box 2: Confirmed By */}
@@ -764,17 +773,19 @@ export const PrintReport: React.FC<PrintReportProps> = ({
             }
             return parseSignature(activeSession.approval_signature);
           })();
+          const factoryName = sig.isSigned || sig.isRejected ? sig.name : activeSession.factory_representative;
+          const hasFactoryName = !!factoryName;
           return (
             <div className="print-signature-box">
               <span className="print-signature-label">Confirmed By</span>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '4px 0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
                 {sig.isSigned ? (
                   <>
                     <div style={{
-                      border: '1.5px solid #10B981',
+                      border: '1px solid #10B981',
                       borderRadius: '4px',
-                      padding: '2px 4px',
-                      fontSize: '0.45rem',
+                      padding: '1px 3.5px',
+                      fontSize: '0.38rem',
                       fontWeight: 800,
                       color: '#10B981',
                       background: 'rgba(16, 185, 129, 0.05)',
@@ -783,7 +794,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '2px',
-                      marginBottom: '2px',
+                      marginBottom: '1px',
                       lineHeight: '1'
                     }}>
                       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}>
@@ -791,20 +802,20 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       </svg>
                       Digitally Signed
                     </div>
-                    <span style={{ fontSize: '0.42rem', color: '#64748B', fontWeight: 600, maxWidth: '90px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
                       {sig.name}
                     </span>
-                    <span style={{ fontSize: '0.38rem', color: '#64748B' }}>
+                    <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
                     </span>
                   </>
                 ) : sig.isRejected ? (
                   <>
                     <div style={{
-                      border: '1.5px solid #EF4444',
+                      border: '1px solid #EF4444',
                       borderRadius: '4px',
-                      padding: '2px 4px',
-                      fontSize: '0.45rem',
+                      padding: '1px 3.5px',
+                      fontSize: '0.38rem',
                       fontWeight: 800,
                       color: '#EF4444',
                       background: 'rgba(239, 68, 68, 0.05)',
@@ -813,7 +824,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '2px',
-                      marginBottom: '2px',
+                      marginBottom: '1px',
                       lineHeight: '1'
                     }}>
                       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}>
@@ -822,22 +833,29 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       </svg>
                       Rejected
                     </div>
-                    <span style={{ fontSize: '0.42rem', color: '#64748B', maxWidth: '90px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
                       {sig.name}
                     </span>
-                    <span style={{ fontSize: '0.38rem', color: '#64748B' }}>
+                    <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
                     </span>
                   </>
                 ) : (
-                  <span style={{ fontSize: '0.45rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
+                  <span style={{ fontSize: '0.38rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
                     Awaiting Approval
                   </span>
                 )}
               </div>
-              <span className="print-signature-name">
-                {activeSession.factory_representative || 'Factory Representative'}
-              </span>
+              <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
+                {hasFactoryName && (
+                  <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#0F172A', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+                    {factoryName}
+                  </span>
+                )}
+                <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
+                  Factory Representative
+                </span>
+              </div>
             </div>
           );
         })()}
@@ -847,20 +865,21 @@ export const PrintReport: React.FC<PrintReportProps> = ({
           const hoSigStr = activeSession.ho_approval_signature || '';
           const hoIsSigned = hoSigStr.includes('Digitally Signed:');
           const hoIsRejected = hoSigStr.includes('Rejected:');
-          // Extract timestamp directly — name has spaces so parseSignature's word-boundary regex misses it.
-          // Raw format in string is "YYYY-MM-DD HH:MM:SS" already in UTC+7; parse with offset then reformat.
           const hoDate = (() => {
             const raw = hoSigStr.match(/\[UTC\+07:00:\s*([^\]]+)\]/)?.[1]?.trim() || '';
             if (!raw) return '';
             try { return convertToUTC7(new Date(raw.replace(' ', 'T') + '+07:00')); } catch { return raw; }
           })();
+          const hoName = (hoIsSigned || hoIsRejected)
+            ? hoSigStr.replace('Digitally Signed:', '').replace('Rejected:', '').split('[')[0].trim()
+            : '';
           return (
             <div className="print-signature-box">
               <span className="print-signature-label">Approved By</span>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '4px 0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
                 {(hoIsSigned || hoIsRejected) ? (
                   <>
-                    <div style={{ border: `1.5px solid ${hoIsSigned ? '#10B981' : '#EF4444'}`, borderRadius: '4px', padding: '2px 4px', fontSize: '0.45rem', fontWeight: 800, color: hoIsSigned ? '#10B981' : '#EF4444', background: hoIsSigned ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.06)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'inline-flex', alignItems: 'center', gap: '2px', marginBottom: '2px', lineHeight: '1' }}>
+                    <div style={{ border: `1px solid ${hoIsSigned ? '#10B981' : '#EF4444'}`, borderRadius: '4px', padding: '1px 3.5px', fontSize: '0.38rem', fontWeight: 800, color: hoIsSigned ? '#10B981' : '#EF4444', background: hoIsSigned ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.06)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'inline-flex', alignItems: 'center', gap: '2px', marginBottom: '1px', lineHeight: '1' }}>
                       {hoIsSigned ? (
                         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}><polyline points="20 6 9 17 4 12" /></svg>
                       ) : (
@@ -868,19 +887,43 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       )}
                       {hoIsSigned ? 'Digitally Signed' : 'Rejected'}
                     </div>
-                    <span style={{ fontSize: '0.42rem', color: '#64748B', fontWeight: 600, maxWidth: '90px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>MPG HO - MD Production</span>
-                    {hoDate && <span style={{ fontSize: '0.38rem', color: '#64748B' }}>{hoDate}</span>}
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>MPG HO - MD Production</span>
+                    {hoDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{hoDate}</span>}
                   </>
                 ) : (
-                  <span style={{ fontSize: '0.45rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
+                  <span style={{ fontSize: '0.38rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
                     Awaiting Approval
                   </span>
                 )}
               </div>
-              <span className="print-signature-name">MPG HO - MD Production</span>
+              <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
+                {hoName && (
+                  <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#0F172A', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+                    {hoName}
+                  </span>
+                )}
+                <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
+                  MPG HO - MD Production
+                </span>
+              </div>
             </div>
           );
         })()}
+
+        {/* Box 4: Authorized By (Director) */}
+        <div className="print-signature-box">
+          <span className="print-signature-label">Authorized By</span>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
+            <span style={{ fontSize: '0.38rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
+              Awaiting Authorization
+            </span>
+          </div>
+          <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
+            <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
+              Director
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Print Footer Info */}

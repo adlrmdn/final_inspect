@@ -441,7 +441,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    const val = cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0;
+                    const val = cleanVal === '' ? 0.0 : parseFloat(cleanVal) || 0.0;
                     updateLineField('session_qty', val);
                   }}
                   className="qms-num-input"
@@ -543,7 +543,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_bahan', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_bahan', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -583,7 +583,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('btj', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('btj', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -625,7 +625,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('barang_hilang', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('barang_hilang', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -689,7 +689,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_cutting', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_cutting', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -729,7 +729,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_sewing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_sewing', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -771,7 +771,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_finishing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_finishing', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -811,7 +811,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_washing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_washing', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -851,7 +851,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_printing', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_printing', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -891,7 +891,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   onChange={(e) => {
                     const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                     e.target.value = cleanVal;
-                    updateLineField('reject_embro', cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0);
+                    updateLineField('reject_embro', cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0);
                   }}
                   className="qms-num-input"
                   style={{
@@ -1034,7 +1034,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, qty_available: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                  setActiveSession((prev: any) => ({ ...prev, qty_available: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1058,7 +1058,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, total_store: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                  setActiveSession((prev: any) => ({ ...prev, total_store: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1084,7 +1084,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, store_inspected: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                  setActiveSession((prev: any) => ({ ...prev, store_inspected: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1109,7 +1109,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, aql: cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0 }));
+                  setActiveSession((prev: any) => ({ ...prev, aql: cleanVal === '' ? 0.0 : parseFloat(cleanVal) || 0.0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1134,7 +1134,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, level_val: cleanVal === '' ? '' : parseFloat(cleanVal) || 0.0 }));
+                  setActiveSession((prev: any) => ({ ...prev, level_val: cleanVal === '' ? 0.0 : parseFloat(cleanVal) || 0.0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1160,7 +1160,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 onChange={(e) => {
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, sampling_pcs: cleanVal === '' ? '' : parseInt(cleanVal, 10) || 0 }));
+                  setActiveSession((prev: any) => ({ ...prev, sampling_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
                 }}
                 className="qms-num-input"
                 style={{
@@ -1303,11 +1303,15 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.cutting_pcs ?? ''}
+                value={activeSession.cutting_pcs === 0 ? '' : activeSession.cutting_pcs ?? ''}
                 placeholder="0"
                 onFocus={(e) => e.target.select()}
                 onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, cutting_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, cutting_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                }}
                 className="qms-num-input"
                 style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
@@ -1318,11 +1322,15 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.sewing_pcs ?? ''}
+                value={activeSession.sewing_pcs === 0 ? '' : activeSession.sewing_pcs ?? ''}
                 placeholder="0"
                 onFocus={(e) => e.target.select()}
                 onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, sewing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, sewing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                }}
                 className="qms-num-input"
                 style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
@@ -1333,11 +1341,15 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.finishing_pcs ?? ''}
+                value={activeSession.finishing_pcs === 0 ? '' : activeSession.finishing_pcs ?? ''}
                 placeholder="0"
                 onFocus={(e) => e.target.select()}
                 onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, finishing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, finishing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                }}
                 className="qms-num-input"
                 style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />
@@ -1348,11 +1360,15 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
               </label>
               <input
                 type="number"
-                value={activeSession.packing_pcs ?? ''}
+                value={activeSession.packing_pcs === 0 ? '' : activeSession.packing_pcs ?? ''}
                 placeholder="0"
                 onFocus={(e) => e.target.select()}
                 onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, packing_pcs: e.target.value === '' ? '' : parseInt(e.target.value) || 0 }))}
+                onChange={(e) => {
+                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                  e.target.value = cleanVal;
+                  setActiveSession((prev: any) => ({ ...prev, packing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                }}
                 className="qms-num-input"
                 style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
               />

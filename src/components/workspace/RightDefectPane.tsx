@@ -41,8 +41,7 @@ const MajorMinorStepper: React.FC<{ label: string; value: number; onChange: (v: 
         onFocus={(e) => e.target.select()}
         onWheel={(e) => e.currentTarget.blur()}
         onChange={(e) => {
-          const v = e.target.value.replace(/^0+(?=\d)/, '');
-          e.target.value = v;
+          const v = e.target.value.replace(/^0+(?=\d)/, '').trim();
           onChange(v === '' ? 0 : parseInt(v, 10) || 0);
         }}
         style={{ width: '24px', border: 'none', outline: 'none', background: 'transparent', textAlign: 'center', fontSize: '0.65rem', fontWeight: 800, padding: 0, margin: 0 }}
@@ -239,7 +238,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                   <label style={{ fontSize: '0.55rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>MAJOR DEFECTS</label>
                   <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '6px', padding: '1px' }}>
                     <button type="button" onClick={() => setDefectMajorInput((p) => Math.max(0, p - 1))} style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}>-</button>
-                    <input type="number" min="0" value={defectMajorInput === 0 ? '' : defectMajorInput ?? ''} placeholder="0" onFocus={(e) => e.target.select()} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { const v = e.target.value.replace(/^0+(?=\d)/, ''); e.target.value = v; setDefectMajorInput(v === '' ? 0 : parseInt(v, 10) || 0); }} style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', textAlign: 'center', fontSize: '0.7rem', fontWeight: 800, padding: 0, margin: 0, width: '100%' }} />
+                    <input type="number" min="0" value={defectMajorInput === 0 ? '' : defectMajorInput ?? ''} placeholder="0" onFocus={(e) => e.target.select()} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { const v = e.target.value.replace(/^0+(?=\d)/, '').trim(); setDefectMajorInput(v === '' ? 0 : parseInt(v, 10) || 0); }} style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', textAlign: 'center', fontSize: '0.7rem', fontWeight: 800, padding: 0, margin: 0, width: '100%' }} />
                     <button type="button" onClick={() => setDefectMajorInput((p) => p + 1)} style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}>+</button>
                   </div>
                 </div>
@@ -247,7 +246,7 @@ export const RightDefectPane: React.FC<RightDefectPaneProps> = ({
                   <label style={{ fontSize: '0.55rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>MINOR DEFECTS</label>
                   <div style={{ display: 'flex', alignItems: 'center', background: 'white', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '6px', padding: '1px' }}>
                     <button type="button" onClick={() => setDefectMinorInput((p) => Math.max(0, p - 1))} style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}>-</button>
-                    <input type="number" min="0" value={defectMinorInput === 0 ? '' : defectMinorInput ?? ''} placeholder="0" onFocus={(e) => e.target.select()} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { const v = e.target.value.replace(/^0+(?=\d)/, ''); e.target.value = v; setDefectMinorInput(v === '' ? 0 : parseInt(v, 10) || 0); }} style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', textAlign: 'center', fontSize: '0.7rem', fontWeight: 800, padding: 0, margin: 0, width: '100%' }} />
+                    <input type="number" min="0" value={defectMinorInput === 0 ? '' : defectMinorInput ?? ''} placeholder="0" onFocus={(e) => e.target.select()} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => { const v = e.target.value.replace(/^0+(?=\d)/, '').trim(); setDefectMinorInput(v === '' ? 0 : parseInt(v, 10) || 0); }} style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', textAlign: 'center', fontSize: '0.7rem', fontWeight: 800, padding: 0, margin: 0, width: '100%' }} />
                     <button type="button" onClick={() => setDefectMinorInput((p) => p + 1)} style={{ padding: '0.2rem 0.5rem', border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 800, fontSize: '0.9rem' }}>+</button>
                   </div>
                 </div>
