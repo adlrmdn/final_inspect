@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap');
+
 :root {
   --azure-white: #F1F5F9;
   /* Clean light slate canvas backdrop */
@@ -3269,8 +3271,8 @@ input[type=number] {
 
   .print-signatures-container {
     display: grid;
-    grid-template-columns: 1.5fr 1fr 1fr;
-    gap: 12px;
+    grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr !important;
+    gap: 8px !important;
     margin-top: 6px;
   }
 

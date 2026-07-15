@@ -395,7 +395,12 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', flex: 1 }}>
                     {checkedChecklistFields.map((chk) => (
                       <div key={chk.field} className="print-checklist-item checked">
-                        <span className="checklist-icon">☑</span>
+                        <span className="checklist-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginRight: '4px', flexShrink: 0 }}>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
+                            <rect x="3" y="3" width="18" height="18" rx="3" />
+                            <polyline points="9 11 12 14 17 9" />
+                          </svg>
+                        </span>
                         <span>{chk.label}</span>
                       </div>
                     ))}
@@ -730,7 +735,14 @@ export const PrintReport: React.FC<PrintReportProps> = ({
       <div className="print-section-title">5. Conclusions</div>
       <div className="print-signatures-container" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', gap: '8px', width: 'calc(100% - 4px)', boxSizing: 'border-box' }}>
         <div className={`print-result-block ${(activeSession.result || 'pending').toLowerCase()}`}>
-          <span className="print-result-title">∴ Overall Inspection Result</span>
+          <span className="print-result-title">
+            <svg width="7" height="7" viewBox="0 0 24 24" fill="currentColor" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
+              <circle cx="12" cy="6" r="3.5" />
+              <circle cx="6" cy="18" r="3.5" />
+              <circle cx="18" cy="18" r="3.5" />
+            </svg>
+            Overall Inspection Result
+          </span>
           <span className={`print-result-value ${(activeSession.result || 'pending').toLowerCase()}`}>
             {activeSession.result ? activeSession.result.toUpperCase() : 'PENDING'}
           </span>
@@ -998,7 +1010,13 @@ export const PrintReport: React.FC<PrintReportProps> = ({
       {/* Print Footer Info */}
       <div className="print-footer-info">
         <span>Distribution by email: 1. Factory  2. MD Prod  3. PPIC/Finance  4. QA MP</span>
-        <span>☞ This is an auto-generated document. Final Inspection QC [{convertToUTC7(new Date())} WIB]</span>
+        <span>
+          <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px', display: 'inline-block', verticalAlign: 'middle' }}>
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
+          This is an auto-generated document. Final Inspection QC [{convertToUTC7(new Date())} WIB]
+        </span>
       </div>
     </div>
 
