@@ -63,22 +63,6 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   const [subjectInput, setSubjectInput] = useState('');
   const [isSendingEmail, setIsSendingEmail] = useState(false);
 
-  // Generate and upload the final signed PDF when BOTH approvals are present.
-  // Three cases:
-  //   A) Live detection — HO signs while app is open (same session, sig transitions null→value)
-  //   B) Catch-up — app was closed when HO signed; verified_doc genuinely missing in DB → regenerate
-  //   C) Already done — project opens with verified_doc already present → skip
-  //
-  // The pendingCatchUpRef defers the catch-up check until fresh DB data has arrived
-  // (activePackagingProject?.verified_doc changes), preventing false triggers from stale cache
-  // that may not yet carry the verified_doc field even though it exists on the server.
-  const prevHoSigRef = useRef<string | null>(null);
-  const prevSessionIdRef = useRef<string | null>(null);
-  const pendingCatchUpRef = useRef<boolean>(false);
-  // Keep tempDefectImages in a ref so the PDF generator always reads the latest value
-  // without making it a trigger for the approval-detection effect.
-  const tempDefectImagesRef = useRef<any[]>(tempDefectImages);
-  useEffect(() => { tempDefectImagesRef.current = tempDefectImages; }, [tempDefectImages]);
   const isOnlineRef = useRef<boolean>(isOnline);
   useEffect(() => { isOnlineRef.current = isOnline; }, [isOnline]);
 
@@ -99,48 +83,13 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   const isDirectorRejected = directorSig.includes('Rejected:');
   const isFullyVerified = isStage1Done && isStage2Done;
 
-  useEffect(() => {
-    const currentSessionId = activeSession?.session_id || null;
-    const currentHoSig = activeSession?.ho_approval_signature || null;
-    const vendorSigned = !!(activeSession?.approval_signature?.includes('Digitally Signed'));
-    const sessionChanged = currentSessionId !== prevSessionIdRef.current;
-    const sigChanged = prevHoSigRef.current !== currentHoSig;
-
-    if (sessionChanged) {
-      pendingCatchUpRef.current = true;
-    }
-
-    const hoActuallySigned = !!currentHoSig && currentHoSig.includes('Digitally Signed:');
-
-    // Case A: live detection — a genuine HO signature appeared (not a rejection)
-    const isLiveDetection = !sessionChanged && sigChanged && hoActuallySigned;
-
-    // Case B: catch-up — only fires after verified_doc dep changes (background DB refresh lands),
-    // so the effect cannot race with the tempDefectImages clear that happens on project open.
-    const needsCatchUp = !sessionChanged && pendingCatchUpRef.current
-      && hoActuallySigned && vendorSigned && !activePackagingProject?.verified_doc;
-
-    if (isLiveDetection || needsCatchUp) {
-      pendingCatchUpRef.current = false;
-      setTimeout(async () => {
-        if (!isOnlineRef.current) return;
-        const signedPdf = await generateReportPdfBase64(
-          activePackagingProject,
-          activeSession,
-          getCycleName,
-          tempDefectImagesRef.current
-        );
-        if (signedPdf) {
-          await handleUploadVerificationDoc(activePackagingProject.project_id, signedPdf);
-        }
-      }, 600);
-    } else if (!sessionChanged && pendingCatchUpRef.current) {
-      pendingCatchUpRef.current = false;
-    }
-
-    prevHoSigRef.current = currentHoSig;
-    prevSessionIdRef.current = currentSessionId;
-  }, [activeSession?.ho_approval_signature, activeSession?.session_id, activePackagingProject?.project_id, activePackagingProject?.verified_doc]);
+  // NOTE (dynamic verified_doc): the console no longer regenerates/uploads the
+  // signed PDF when the HO signature appears. The portal re-renders the report
+  // server-side at EVERY workflow transition (approve/reject at each stage, and
+  // on-demand when the document is viewed) and pushes it into
+  // packaging_projects.verified_doc — the console just displays that column.
+  // The only console write left is the initial upload at Verify → Send, so the
+  // very first email has an attachment before any portal milestone exists.
 
   const handleSendEmail = async () => {
     if (!isOnlineRef.current) {
