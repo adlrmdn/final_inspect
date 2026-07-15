@@ -68,8 +68,8 @@ export const InspectorProfileGate: React.FC = () => {
         className="inspector-profile-chip no-print"
         style={{
           position: 'fixed',
-          top: '10px',
-          right: '90px',
+          top: '14px',
+          right: '125px',
           zIndex: 9000,
           display: 'inline-flex',
           alignItems: 'center',
