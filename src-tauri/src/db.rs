@@ -246,6 +246,8 @@ pub struct PackagingProjectSession {
     pub factory_representative: Option<String>,
     #[serde(default)]
     pub inspector: Option<String>,
+    #[serde(default)]
+    pub remarks: Option<String>,
     
     // Status fields
     #[serde(default)]
@@ -491,6 +493,7 @@ pub fn init_tables() -> Result<(), String> {
             -- Text fields
             factory_representative VARCHAR(255),
             inspector VARCHAR(255),
+            remarks TEXT,
             
             -- Status fields
             version VARCHAR(50),
@@ -547,6 +550,7 @@ pub fn init_tables() -> Result<(), String> {
     // QC-entered Retur Kain (nullable — NULL means "not entered", distinct from 0).
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS retur_kain DOUBLE PRECISION", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS inspector_email VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS remarks TEXT", &[]);
     // Optimistic concurrency lock — incremented on every save; 0/NULL clients bypass the check
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1", &[]);
 
@@ -1742,9 +1746,9 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             check_shipping_mark, check_other_1, check_other_1_label, check_other_2, check_other_2_label,
             qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
             finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
-            version, result, retur_kain, row_version
+            remarks, version, result, retur_kain, row_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, 1)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, 1)
          ON CONFLICT (session_id)
          DO UPDATE SET
             cycle_number = $3, inspector_id = $4, status = $5, started_at = $6, ended_at = $7,
@@ -1754,10 +1758,10 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             check_other_1 = $19, check_other_1_label = $20, check_other_2 = $21, check_other_2_label = $22,
             qty_available = $23, total_store = $24, store_inspected = $25, cutting_pcs = $26, sewing_pcs = $27,
             finishing_pcs = $28, packing_pcs = $29, sampling_pcs = $30, aql = $31, level_val = $32,
-            factory_representative = $33, inspector = $34, version = $35, result = $36,
-            retur_kain = $37,
+            factory_representative = $33, inspector = $34, remarks = $35, version = $36, result = $37,
+            retur_kain = $38,
             row_version = packaging_project_sessions.row_version + 1
-         WHERE ($38 = 0 OR packaging_project_sessions.row_version = $38)",
+         WHERE ($39 = 0 OR packaging_project_sessions.row_version = $39)",
         &[
             &session.session_id,
             &session.project_id,
@@ -1793,6 +1797,7 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             &session.level_val,
             &session.factory_representative,
             &session.inspector,
+            &session.remarks,
             &session.version,
             &session.result,
             &session.retur_kain,
@@ -2254,7 +2259,7 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
                 qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
                 aql, level_val, factory_representative, inspector, version, result,
                 approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
-                row_version, director_approval_signature, inspector_email, retur_kain
+                row_version, director_approval_signature, inspector_email, retur_kain, remarks
          FROM packaging_project_sessions
          WHERE project_id = $1
          ORDER BY cycle_number ASC",
@@ -2379,6 +2384,7 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
             "director_approval_signature": s_row.get::<_, Option<String>>(44),
             "inspector_email": s_row.get::<_, Option<String>>(45),
             "retur_kain": s_row.get::<_, Option<f64>>(46),
+            "remarks": s_row.get::<_, Option<String>>(47),
             "report_lines": session_lines_json,
             "deduction_lines": deduction_lines_json
         }));

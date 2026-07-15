@@ -1173,6 +1173,27 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                 }}
               />
             </div>
+            <div style={{ gridColumn: 'span 3', marginTop: '0.2rem' }}>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                QC INSPECTOR REMARKS &amp; NOTES
+              </label>
+              <textarea
+                placeholder="Enter inspection remarks or special notes..."
+                value={activeSession.remarks || ''}
+                onChange={(e) => setActiveSession((prev: any) => ({ ...prev, remarks: e.target.value }))}
+                style={{
+                  width: '100%',
+                  height: '38px',
+                  padding: '0.35rem 0.45rem',
+                  fontSize: '0.74rem',
+                  border: '2px solid rgba(15, 23, 42, 0.16)',
+                  borderRadius: '8px',
+                  outline: 'none',
+                  resize: 'none',
+                  fontFamily: 'inherit'
+                }}
+              />
+            </div>
           </div>
         </div>
 
@@ -1520,6 +1541,12 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
           <div>
             <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>SAMPLING PCS</span>
             <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--deep-ocean)' }}>{activeSession.sampling_pcs}</div>
+          </div>
+          <div style={{ gridColumn: 'span 3', borderTop: '1px solid rgba(15, 23, 42, 0.06)', paddingTop: '0.5rem', marginTop: '0.25rem' }}>
+            <span style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>QC INSPECTOR REMARKS &amp; NOTES</span>
+            <div style={{ fontSize: '0.74rem', color: activeSession.remarks ? 'var(--deep-ocean)' : '#94A3B8', fontStyle: activeSession.remarks ? 'normal' : 'italic', whiteSpace: 'pre-wrap', lineHeight: 1.3 }}>
+              {activeSession.remarks || 'No remarks or special notes entered for this session.'}
+            </div>
           </div>
         </div>
       </div>
