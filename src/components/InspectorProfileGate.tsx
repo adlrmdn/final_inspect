@@ -1,9 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   InspectorProfile,
   getInspectorProfile,
   saveInspectorProfile,
-  clearInspectorProfile,
 } from '../utils/inspector_profile';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -14,10 +13,6 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * localStorage). The email is written onto sessions at verification-send time
  * so the portal can notify the inspector when an approval stage rejects the
  * inspection ("back to QC") and when the project completes.
- *
- * While a profile exists, a discreet chip in the bottom-left shows who is
- * registered, with Change (re-opens the popup prefilled) and Remove (deletes
- * the profile → the gate blocks again).
  */
 export const InspectorProfileGate: React.FC = () => {
   const [profile, setProfile] = useState<InspectorProfile | null>(() => getInspectorProfile());
@@ -26,14 +21,25 @@ export const InspectorProfileGate: React.FC = () => {
   const [emailInput, setEmailInput] = useState('');
   const [error, setError] = useState('');
 
-  const modalOpen = !profile || editing;
+  useEffect(() => {
+    const handleProfileChange = () => {
+      setProfile(getInspectorProfile());
+    };
+    const handleEdit = () => {
+      setNameInput(profile?.name || '');
+      setEmailInput(profile?.email || '');
+      setError('');
+      setEditing(true);
+    };
+    window.addEventListener('inspector-profile-changed', handleProfileChange);
+    window.addEventListener('edit-inspector-profile', handleEdit);
+    return () => {
+      window.removeEventListener('inspector-profile-changed', handleProfileChange);
+      window.removeEventListener('edit-inspector-profile', handleEdit);
+    };
+  }, [profile]);
 
-  const openEditor = () => {
-    setNameInput(profile?.name || '');
-    setEmailInput(profile?.email || '');
-    setError('');
-    setEditing(true);
-  };
+  const modalOpen = !profile || editing;
 
   const handleSave = () => {
     const name = nameInput.trim();
@@ -51,63 +57,12 @@ export const InspectorProfileGate: React.FC = () => {
     setProfile(next);
     setEditing(false);
     setError('');
+    window.dispatchEvent(new CustomEvent('inspector-profile-changed'));
   };
 
-  const handleRemove = () => {
-    clearInspectorProfile();
-    setProfile(null);
-    setNameInput('');
-    setEmailInput('');
-    setError('');
-    setEditing(false); // no profile → gate blocks again
-  };
 
   if (!modalOpen) {
-    return (
-      <div
-        className="inspector-profile-chip no-print"
-        style={{
-          position: 'fixed',
-          top: '14px',
-          right: '125px',
-          zIndex: 9000,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '0.45rem',
-          background: 'rgba(255, 255, 255, 0.88)',
-          backdropFilter: 'blur(6px)',
-          border: '1.5px solid rgba(15, 23, 42, 0.12)',
-          borderRadius: '999px',
-          padding: '0.3rem 0.75rem',
-          fontSize: '0.68rem',
-          color: '#0F172A',
-          boxShadow: '0 4px 12px rgba(15, 23, 42, 0.08)',
-        }}
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--royal-blue)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-          <circle cx="12" cy="7" r="4" />
-        </svg>
-        <span style={{ fontWeight: 800 }}>{profile!.name}</span>
-        <span style={{ color: '#64748B' }}>{profile!.email}</span>
-        <button
-          type="button"
-          onClick={openEditor}
-          title="Change the registered QC inspector"
-          style={{ border: 'none', background: 'transparent', color: 'var(--royal-blue)', fontWeight: 800, fontSize: '0.66rem', cursor: 'pointer', padding: '0 0.15rem' }}
-        >
-          Change
-        </button>
-        <button
-          type="button"
-          onClick={handleRemove}
-          title="Remove the registered QC inspector from this device"
-          style={{ border: 'none', background: 'transparent', color: '#EF4444', fontWeight: 800, fontSize: '0.66rem', cursor: 'pointer', padding: '0 0.15rem' }}
-        >
-          Remove
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (

@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { getInspectorProfile, clearInspectorProfile, InspectorProfile } from '../../utils/inspector_profile';
 
 interface FormHeaderProps {
   activePackagingProject: any;
@@ -23,6 +24,27 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
   onClose,
   onShowGuidelines,
 }) => {
+  const [profile, setProfile] = useState<InspectorProfile | null>(() => getInspectorProfile());
+
+  useEffect(() => {
+    const handleProfileChange = () => {
+      setProfile(getInspectorProfile());
+    };
+    window.addEventListener('inspector-profile-changed', handleProfileChange);
+    return () => {
+      window.removeEventListener('inspector-profile-changed', handleProfileChange);
+    };
+  }, []);
+
+  const handleEditProfile = () => {
+    window.dispatchEvent(new CustomEvent('edit-inspector-profile'));
+  };
+
+  const handleRemoveProfile = () => {
+    clearInspectorProfile();
+    window.dispatchEvent(new CustomEvent('inspector-profile-changed'));
+  };
+
   return (
     <div
       className="flex-between dashboard-header form-view-header"
@@ -224,6 +246,49 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
             </svg>
           </button>
         </div>
+        {profile && (
+          <div
+            className="inspector-profile-chip no-print"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              background: 'rgba(255, 255, 255, 0.88)',
+              backdropFilter: 'blur(6px)',
+              border: '1.5px solid rgba(15, 23, 42, 0.12)',
+              borderRadius: '999px',
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.68rem',
+              color: '#0F172A',
+              boxShadow: '0 4px 12px rgba(15, 23, 42, 0.08)',
+              flexShrink: 0,
+              marginTop: '0.4rem',
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--royal-blue)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+            <span style={{ fontWeight: 800 }}>{profile.name}</span>
+            <span style={{ color: '#64748B' }}>{profile.email}</span>
+            <button
+              type="button"
+              onClick={handleEditProfile}
+              title="Change the registered QC inspector"
+              style={{ border: 'none', background: 'transparent', color: 'var(--royal-blue)', fontWeight: 800, fontSize: '0.66rem', cursor: 'pointer', padding: '0 0.15rem' }}
+            >
+              Change
+            </button>
+            <button
+              type="button"
+              onClick={handleRemoveProfile}
+              title="Remove the registered QC inspector from this device"
+              style={{ border: 'none', background: 'transparent', color: '#EF4444', fontWeight: 800, fontSize: '0.66rem', cursor: 'pointer', padding: '0 0.15rem' }}
+            >
+              Remove
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
