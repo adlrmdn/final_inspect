@@ -23,33 +23,31 @@ export const convertToUTC7 = (dateInput: string | Date | null | undefined): stri
 };
 
 export const parseSignature = (sigStr: string | null | undefined) => {
-  if (!sigStr) return { isSigned: false, isRejected: false, name: '', date: '' };
-  
-  if (sigStr.startsWith('Digitally Signed:') || sigStr.includes('Digitally Signed:')) {
-    const match = sigStr.match(/Digitally Signed:\s*([^\s\[]+)(?:\s*\[UTC\+07:00:\s*([^\]]+)\])?/);
-    if (match) {
-      return {
-        isSigned: true,
-        isRejected: false,
-        name: match[1],
-        date: match[2] || ''
-      };
+  if (!sigStr) return { isSigned: false, isRejected: false, name: '', email: '', date: '' };
+
+  // Signature contract: '<Prefix>: <who> [UTC+07:00: <ts>]' where <who> is
+  // either a role label ('MPG HO - MD Production'), a bare email, or the
+  // attributed 'Name <email>' the portal writes for identified approvers.
+  const parseBody = (prefix: string) => {
+    const match = sigStr.match(new RegExp(prefix + String.raw`:\s*([^\[]+?)\s*(?:\[UTC\+07:00:\s*([^\]]+)\])?\s*$`));
+    let name = match ? match[1].trim() : sigStr;
+    let email = '';
+    const em = name.match(/^(.*?)\s*<([^>]+)>$/);
+    if (em) {
+      email = em[2].trim();
+      name = em[1].trim() || email;
     }
-    return { isSigned: true, isRejected: false, name: sigStr, date: '' };
-  } else if (sigStr.startsWith('Rejected:') || sigStr.includes('Rejected:')) {
-    const match = sigStr.match(/Rejected:\s*([^\s\[]+)(?:\s*\[UTC\+07:00:\s*([^\]]+)\])?/);
-    if (match) {
-      return {
-        isSigned: false,
-        isRejected: true,
-        name: match[1],
-        date: match[2] || ''
-      };
-    }
-    return { isSigned: false, isRejected: true, name: sigStr, date: '' };
+    return { name, email, date: match?.[2]?.trim() || '' };
+  };
+
+  if (sigStr.includes('Digitally Signed:')) {
+    return { isSigned: true, isRejected: false, ...parseBody('Digitally Signed') };
+  }
+  if (sigStr.includes('Rejected:')) {
+    return { isSigned: false, isRejected: true, ...parseBody('Rejected') };
   }
 
-  return { isSigned: false, isRejected: false, name: sigStr, date: '' };
+  return { isSigned: false, isRejected: false, name: sigStr, email: '', date: '' };
 };
 
 interface PrintReportProps {
@@ -572,25 +570,51 @@ export const PrintReport: React.FC<PrintReportProps> = ({
         const fabricLines: any[] = activePackagingProject.fabric_lines || [];
         if (fabricLines.length === 0) return null;
         const fmt = (v: any) => (v != null ? Number(v).toLocaleString('id-ID') : '');
+        const fmtCons = (v: any) => (v != null ? Number(v).toLocaleString('id-ID', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) : '—');
+        const fmtPercent = (v: any) => (v != null ? (v * 100).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%' : '—');
         const shortLabel = (s: string) => !s || s.length <= 42 ? s : `${s.slice(0, 28).trimEnd()} ... ${s.slice(-13).trimStart()}`;
         return (
           <div style={{ marginTop: '5px', marginBottom: '3px', fontSize: '0.57rem', color: '#334155', lineHeight: 1.8 }}>
             {fabricLines.map((f: any, idx: number) => {
-              const pairs: [string, string][] = [
+              const unitMatch = f.label?.match(/\(([A-Za-z0-9]+)\)\s*$/);
+              const unit = unitMatch ? ` ${unitMatch[1]}` : '';
+
+              const fabricPairs: [string, string][] = [
                 ['Fabric Sent', fmt(f.fabric_sent)],
                 ['Short Roll', fmt(f.short_roll)],
                 ['Sisa Kain (utuh)', fmt(f.sisa_kain)],
                 ['Kepala Kain', fmt(f.kepala_kain)],
                 ['Retur Kain', fmt(f.return_kain)],
               ];
+
+              const consPairs: [string, string][] = [
+                ['Cutt Plan', f.cutt_plan != null ? `${Number(f.cutt_plan).toLocaleString('id-ID')} Pcs` : '—'],
+                ['Plan Cons', fmtCons(f.consumption_plan) + unit],
+                ['Actual Cons', fmtCons(f.actual_consumption) + unit],
+                ['Budget Cap (3%)', f.consumption_plan != null ? fmtCons(f.consumption_plan * 1.03) + unit : '—'],
+                ['Overconsumption', fmtPercent(f.overconsumption)],
+              ];
+
               return (
-                <div key={f.id || idx} style={{ display: 'flex', flexWrap: 'wrap', columnGap: '20px', paddingLeft: '2px', borderTop: idx === 0 ? '1px solid #E2E8F0' : 'none', paddingTop: '3px' }}>
-                  {f.label && <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: '#334155' }} title={f.label}>{shortLabel(f.label)}</span>}
-                  {pairs.map(([k, v]) => (
-                    <span key={k} style={{ whiteSpace: 'nowrap' }}>
-                      <span style={{ fontWeight: 600, color: '#64748B' }}>{k}:</span>{v !== '' ? ` ${v}` : ''}
-                    </span>
-                  ))}
+                <div key={f.id || idx} style={{ display: 'flex', flexDirection: 'column', borderTop: idx === 0 ? '1px solid #E2E8F0' : 'none', paddingTop: '3.5px', paddingBottom: '3.5px' }}>
+                  {/* First row: Label & Fabric tracking data */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: '20px', paddingLeft: '2px' }}>
+                    {f.label && <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: '#334155' }} title={f.label}>{shortLabel(f.label)}</span>}
+                    {fabricPairs.map(([k, v]) => (
+                      <span key={k} style={{ whiteSpace: 'nowrap' }}>
+                        <span style={{ fontWeight: 600, color: '#64748B' }}>{k}:</span>{v !== '' ? ` ${v}` : ''}
+                      </span>
+                    ))}
+                  </div>
+                  {/* Second row: Consumption data beneath it */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: '20px', paddingLeft: '2px', marginTop: '1px' }}>
+                    <span style={{ whiteSpace: 'nowrap', color: '#94A3B8', fontWeight: 600, marginRight: '4px', paddingLeft: '8px' }}>↳</span>
+                    {consPairs.map(([k, v]) => (
+                      <span key={k} style={{ whiteSpace: 'nowrap' }}>
+                        <span style={{ fontWeight: 600, color: '#64748B' }}>{k}:</span>{v !== '' ? ` ${v}` : ''}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -737,6 +761,11 @@ export const PrintReport: React.FC<PrintReportProps> = ({
               </svg>
               Digitally Signed
             </div>
+            {activeSession.inspector_email && (
+              <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={activeSession.inspector_email}>
+                ({activeSession.inspector_email})
+              </span>
+            )}
             <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600 }}>
               {convertToUTC7(activeSession.ended_at || activeSession.started_at)}
             </span>
@@ -761,6 +790,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                 isSigned: true,
                 isRejected: false,
                 name: activeSession.approved_by || activeSession.approval_email || 'Representative',
+                email: activeSession.approval_email || '',
                 date: activeSession.approved_at ? convertToUTC7(activeSession.approved_at) : ''
               };
             } else if (activeSession.approval_status === 'rejected') {
@@ -768,12 +798,15 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                 isSigned: false,
                 isRejected: true,
                 name: activeSession.approved_by || activeSession.approval_email || 'Representative',
+                email: activeSession.approval_email || '',
                 date: activeSession.approved_at ? convertToUTC7(activeSession.approved_at) : ''
               };
             }
             return parseSignature(activeSession.approval_signature);
           })();
-          const factoryName = sig.isSigned || sig.isRejected ? sig.name : activeSession.factory_representative;
+          // Footer shows the PERSON (the name the inspector typed in the console);
+          // the stamp shows the approval email the decision came from.
+          const factoryName = activeSession.factory_representative || sig.name;
           const hasFactoryName = !!factoryName;
           return (
             <div className="print-signature-box">
@@ -802,8 +835,8 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       </svg>
                       Digitally Signed
                     </div>
-                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
-                      {sig.name}
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.email || sig.name}>
+                      {sig.email ? `(${sig.email})` : sig.name}
                     </span>
                     <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
@@ -833,8 +866,8 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       </svg>
                       Rejected
                     </div>
-                    <span style={{ fontSize: '0.35rem', color: '#64748B', maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.name}>
-                      {sig.name}
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.email || sig.name}>
+                      {sig.email ? `(${sig.email})` : sig.name}
                     </span>
                     <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
@@ -863,16 +896,14 @@ export const PrintReport: React.FC<PrintReportProps> = ({
         {/* Box 3: Approved By (MPG HO - MD Production) */}
         {(() => {
           const hoSigStr = activeSession.ho_approval_signature || '';
-          const hoIsSigned = hoSigStr.includes('Digitally Signed:');
-          const hoIsRejected = hoSigStr.includes('Rejected:');
+          const hoParsed = parseSignature(hoSigStr);
+          const hoIsSigned = hoParsed.isSigned;
+          const hoIsRejected = hoParsed.isRejected;
           const hoDate = (() => {
-            const raw = hoSigStr.match(/\[UTC\+07:00:\s*([^\]]+)\]/)?.[1]?.trim() || '';
-            if (!raw) return '';
-            try { return convertToUTC7(new Date(raw.replace(' ', 'T') + '+07:00')); } catch { return raw; }
+            if (!hoParsed.date) return '';
+            try { return convertToUTC7(new Date(hoParsed.date.replace(' ', 'T') + '+07:00')); } catch { return hoParsed.date; }
           })();
-          const hoName = (hoIsSigned || hoIsRejected)
-            ? hoSigStr.replace('Digitally Signed:', '').replace('Rejected:', '').split('[')[0].trim()
-            : '';
+          const hoName = (hoIsSigned || hoIsRejected) ? hoParsed.name : '';
           return (
             <div className="print-signature-box">
               <span className="print-signature-label">Approved By</span>
@@ -887,7 +918,9 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       )}
                       {hoIsSigned ? 'Digitally Signed' : 'Rejected'}
                     </div>
-                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>MPG HO - MD Production</span>
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={hoParsed.email || hoName}>
+                      {hoParsed.email ? `(${hoParsed.email})` : (hoName || 'MPG HO - MD Production')}
+                    </span>
                     {hoDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{hoDate}</span>}
                   </>
                 ) : (
@@ -914,16 +947,14 @@ export const PrintReport: React.FC<PrintReportProps> = ({
             (same 'Digitally Signed:'/'Rejected:' prefix contract as the HO column) */}
         {(() => {
           const dirSigStr = activeSession.director_approval_signature || '';
-          const dirIsSigned = dirSigStr.includes('Digitally Signed:');
-          const dirIsRejected = dirSigStr.includes('Rejected:');
+          const dirParsed = parseSignature(dirSigStr);
+          const dirIsSigned = dirParsed.isSigned;
+          const dirIsRejected = dirParsed.isRejected;
           const dirDate = (() => {
-            const raw = dirSigStr.match(/\[UTC\+07:00:\s*([^\]]+)\]/)?.[1]?.trim() || '';
-            if (!raw) return '';
-            try { return convertToUTC7(new Date(raw.replace(' ', 'T') + '+07:00')); } catch { return raw; }
+            if (!dirParsed.date) return '';
+            try { return convertToUTC7(new Date(dirParsed.date.replace(' ', 'T') + '+07:00')); } catch { return dirParsed.date; }
           })();
-          const dirName = (dirIsSigned || dirIsRejected)
-            ? dirSigStr.replace('Digitally Signed:', '').replace('Rejected:', '').split('[')[0].trim()
-            : '';
+          const dirName = (dirIsSigned || dirIsRejected) ? dirParsed.name : '';
           return (
             <div className="print-signature-box">
               <span className="print-signature-label">Authorized By</span>
@@ -938,7 +969,9 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       )}
                       {dirIsSigned ? 'Digitally Signed' : 'Rejected'}
                     </div>
-                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>{dirName}</span>
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={dirParsed.email || dirName}>
+                      {dirParsed.email ? `(${dirParsed.email})` : dirName}
+                    </span>
                     {dirDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{dirDate}</span>}
                   </>
                 ) : (
