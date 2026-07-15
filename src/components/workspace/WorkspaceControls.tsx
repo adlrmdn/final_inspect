@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { generateReportPdfBase64 } from '../../utils/pdf_generator';
 import { getInspectorProfile } from '../../utils/inspector_profile';
 
 // Base URL of the verification web service. Customize this when deploying.
@@ -27,7 +26,6 @@ interface WorkspaceControlsProps {
   handlePartialSyncProject: () => void;
   isOnline: boolean;
   isProcessing: boolean;
-  tempDefectImages?: any[];
   onRefreshProject: () => Promise<void>;
 }
 
@@ -52,7 +50,6 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   handlePartialSyncProject,
   isOnline,
   isProcessing,
-  tempDefectImages = [],
   onRefreshProject,
 }) => {
   const [showPreview, setShowPreview] = useState(false);
@@ -126,24 +123,25 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
         inspectorEmail: inspectorProfile?.email || null
       });
 
-      // 1. Generate the PDF of the report view programmatically.
-      // Strip rejection fields from the session before rendering — the DB was already
-      // cleared by save_session_approval_info above, but the prop still carries old state.
-      const sessionForPdf = {
-        ...activeSession,
-        approval_status: null,
-        approval_signature: null,
-        approved_by: null,
-        approved_at: null,
-      };
-      const reportPdfBase64 = await generateReportPdfBase64(
-        activePackagingProject,
-        sessionForPdf,
-        getCycleName,
-        tempDefectImages
-      );
+      // 1. Fetch the PDF dynamically from the web service.
+      let reportPdfBase64 = '';
+      try {
+        const response = await fetch(`${WEB_SERVICE_URL}/qc/print/${activePackagingProject.project_id}/${activeSession.session_id}`);
+        if (response.ok) {
+          const blob = await response.blob();
+          reportPdfBase64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } else {
+          console.warn('Failed to fetch PDF from web service:', response.statusText);
+        }
+      } catch (err) {
+        console.error('Error fetching PDF from web service:', err);
+      }
       
-      // Fallback to verified_doc if pdf generation failed
       const attachmentData = reportPdfBase64 || activePackagingProject.verified_doc || null;
 
       if (!attachmentData) {
@@ -875,16 +873,20 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                     'Are you sure you want to reset the verification status for this session? This will clear the representative signature, reset the status, and allow you to re-send the verification email.'
                   );
                   if (confirmReset) {
-                    setShowPreview(false);
-                    await invoke('reset_session_approval_info', {
-                      projectId: activePackagingProject.project_id,
-                      sessionId: activeSession.session_id
-                    });
-                    await invoke('save_project_verification_doc', {
-                      projectId: activePackagingProject.project_id,
-                      docBase64: ''
-                    });
-                    await onRefreshProject();
+                    try {
+                      await invoke('reset_session_approval_info', {
+                        projectId: activePackagingProject.project_id,
+                        sessionId: activeSession.session_id
+                      });
+                      setShowPreview(false);
+                      await invoke('save_project_verification_doc', {
+                        projectId: activePackagingProject.project_id,
+                        docBase64: ''
+                      });
+                      await onRefreshProject();
+                    } catch (e) {
+                      await showProfessionalAlert('Recall Failed', String(e), 'danger');
+                    }
                   }
                 }}
                 style={{

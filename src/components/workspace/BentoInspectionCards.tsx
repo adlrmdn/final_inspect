@@ -1296,7 +1296,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
           >
             3. Production Status
           </h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
             <div>
               <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
                 CUTTING PCS
@@ -1368,6 +1368,28 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
                   const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
                   e.target.value = cleanVal;
                   setActiveSession((prev: any) => ({ ...prev, packing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                }}
+                className="qms-num-input"
+                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+              />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                RETUR KAIN
+              </label>
+              {/* Nullable on purpose: empty = not measured. A value > 0 overrides the
+                  vendor-entered Retur Kain on the MD Production approval form. */}
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={activeSession.retur_kain ?? ''}
+                placeholder="—"
+                onFocus={(e) => e.target.select()}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setActiveSession((prev: any) => ({ ...prev, retur_kain: v === '' ? null : Math.max(0, parseFloat(v) || 0) }));
                 }}
                 className="qms-num-input"
                 style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
@@ -1575,7 +1597,7 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 1fr',
+            gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr',
             gap: '0.5rem',
             background: '#F8FAFC',
             padding: '0.85rem',
@@ -1598,6 +1620,10 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
           <div>
             <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>PACKING PCS</span>
             <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.packing_pcs}</strong>
+          </div>
+          <div>
+            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>RETUR KAIN</span>
+            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.retur_kain ?? '—'}</strong>
           </div>
         </div>
       </div>

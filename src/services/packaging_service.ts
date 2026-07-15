@@ -63,7 +63,15 @@ export class PackagingService {
       'cutting_pcs', 'sewing_pcs', 'finishing_pcs', 'packing_pcs', 'sampling_pcs'
     ];
     const floatFields = ['aql', 'level_val'];
-    
+
+    // retur_kain stays nullable: empty/unset means "not entered" (null), which the
+    // portal treats as "keep the vendor value" — so it must NOT be coerced to 0.
+    {
+      let rk = s.retur_kain;
+      if (typeof rk === 'string') rk = rk.trim();
+      s.retur_kain = (rk === '' || rk === null || rk === undefined) ? null : (Number(rk) || 0);
+    }
+
     intFields.forEach(f => {
       let val = s[f];
       if (typeof val === 'string') {

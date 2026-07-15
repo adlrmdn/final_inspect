@@ -230,7 +230,11 @@ pub struct PackagingProjectSession {
     pub packing_pcs: i32,
     #[serde(default)]
     pub sampling_pcs: i32,
-    
+    // QC-entered Retur Kain (m/yd) from the Production Status card. None = not
+    // entered; the portal overrides the HO prefill only when the value is > 0.
+    #[serde(default)]
+    pub retur_kain: Option<f64>,
+
     // Number fill float fields
     #[serde(default)]
     pub aql: f64,
@@ -540,6 +544,8 @@ pub fn init_tables() -> Result<(), String> {
     // Director stage (stage 3): portal writes the signature ('Digitally Signed:'/'Rejected:' prefix,
     // same contract as ho_approval_signature); console writes inspector_email from the device profile.
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS director_approval_signature VARCHAR(255)", &[]);
+    // QC-entered Retur Kain (nullable — NULL means "not entered", distinct from 0).
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS retur_kain DOUBLE PRECISION", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS inspector_email VARCHAR(255)", &[]);
     // Optimistic concurrency lock — incremented on every save; 0/NULL clients bypass the check
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1", &[]);
@@ -1736,9 +1742,9 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             check_shipping_mark, check_other_1, check_other_1_label, check_other_2, check_other_2_label,
             qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
             finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
-            version, result, row_version
+            version, result, retur_kain, row_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, 1)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 = '' THEN NULL ELSE $8::DATE END, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, 1)
          ON CONFLICT (session_id)
          DO UPDATE SET
             cycle_number = $3, inspector_id = $4, status = $5, started_at = $6, ended_at = $7,
@@ -1749,8 +1755,9 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             qty_available = $23, total_store = $24, store_inspected = $25, cutting_pcs = $26, sewing_pcs = $27,
             finishing_pcs = $28, packing_pcs = $29, sampling_pcs = $30, aql = $31, level_val = $32,
             factory_representative = $33, inspector = $34, version = $35, result = $36,
+            retur_kain = $37,
             row_version = packaging_project_sessions.row_version + 1
-         WHERE ($37 = 0 OR packaging_project_sessions.row_version = $37)",
+         WHERE ($38 = 0 OR packaging_project_sessions.row_version = $38)",
         &[
             &session.session_id,
             &session.project_id,
@@ -1788,6 +1795,7 @@ pub fn save_packaging_session(session: PackagingProjectSession) -> Result<i32, S
             &session.inspector,
             &session.version,
             &session.result,
+            &session.retur_kain,
             &expected_version,
         ],
     ).map_err(|e| format!("Failed to save packaging session: {}", e))?;
@@ -1883,9 +1891,9 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                     qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
                     aql, level_val, factory_representative, inspector, version, result,
                     approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
-                    director_approval_signature, inspector_email
-             FROM packaging_project_sessions 
-             WHERE project_id = $1 
+                    director_approval_signature, inspector_email, retur_kain
+             FROM packaging_project_sessions
+             WHERE project_id = $1
              ORDER BY cycle_number ASC",
             &[&project_id]
         ).map_err(|e| format!("Failed to query sessions for {}: {}", project_id, e))?;
@@ -2006,6 +2014,7 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                 "ho_approval_signature": s_row.get::<_, Option<String>>(42),
                 "director_approval_signature": s_row.get::<_, Option<String>>(43),
                 "inspector_email": s_row.get::<_, Option<String>>(44),
+                "retur_kain": s_row.get::<_, Option<f64>>(45),
                 "report_lines": session_lines_json,
                 "deduction_lines": deduction_lines_json
             }));
@@ -2245,7 +2254,7 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
                 qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
                 aql, level_val, factory_representative, inspector, version, result,
                 approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
-                row_version, director_approval_signature, inspector_email
+                row_version, director_approval_signature, inspector_email, retur_kain
          FROM packaging_project_sessions
          WHERE project_id = $1
          ORDER BY cycle_number ASC",
@@ -2369,6 +2378,7 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
             "row_version": s_row.get::<_, Option<i32>>(43),
             "director_approval_signature": s_row.get::<_, Option<String>>(44),
             "inspector_email": s_row.get::<_, Option<String>>(45),
+            "retur_kain": s_row.get::<_, Option<f64>>(46),
             "report_lines": session_lines_json,
             "deduction_lines": deduction_lines_json
         }));
@@ -2522,14 +2532,35 @@ pub fn save_session_approval_info(project_id: &str, session_id: &str, approval_t
 pub fn reset_session_approval_info(project_id: &str, session_id: &str) -> Result<(), String> {
     ensure_init();
     let mut client = get_connection_qms()?;
-    client.execute(
+    // Recall guard: once MD Production (HO) — or the Director after them — has
+    // digitally signed, the console can no longer recall the approval; reverting
+    // a signed chain is a portal-side operation. The check lives in the UPDATE's
+    // WHERE clause so a signature landing between the console's last poll and
+    // this click can never be wiped (atomic; a 'Rejected:' stamp does not block).
+    let updated = client.execute(
         "UPDATE packaging_project_sessions
          SET approval_token = NULL, approval_email = NULL, approval_status = NULL,
              approved_by = NULL, approved_at = NULL, approval_signature = NULL,
              ho_approval_signature = NULL, director_approval_signature = NULL
-         WHERE session_id = $1 AND project_id = $2",
+         WHERE session_id = $1 AND project_id = $2
+           AND COALESCE(ho_approval_signature, '') NOT LIKE '%Digitally Signed:%'
+           AND COALESCE(director_approval_signature, '') NOT LIKE '%Digitally Signed:%'",
         &[&session_id, &project_id]
     ).map_err(|e| format!("Failed to reset approval info: {}", e))?;
+    if updated == 0 {
+        let signed = client.query_opt(
+            "SELECT 1 FROM packaging_project_sessions
+             WHERE session_id = $1 AND project_id = $2
+               AND (ho_approval_signature LIKE '%Digitally Signed:%'
+                    OR director_approval_signature LIKE '%Digitally Signed:%')",
+            &[&session_id, &project_id]
+        ).map_err(|e| format!("Failed to verify session state: {}", e))?;
+        return Err(if signed.is_some() {
+            "Cannot recall: MD Production has already approved this inspection. A signed approval can only be reverted from the portal side.".to_string()
+        } else {
+            "Session not found — refresh the project and try again.".to_string()
+        });
+    }
     Ok(())
 }
 
