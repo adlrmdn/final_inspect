@@ -763,7 +763,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
             </div>
             {activeSession.inspector_email && (
               <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={activeSession.inspector_email}>
-                ({activeSession.inspector_email})
+                {activeSession.inspector_email}
               </span>
             )}
             <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600 }}>
@@ -836,7 +836,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       Digitally Signed
                     </div>
                     <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.email || sig.name}>
-                      {sig.email ? `(${sig.email})` : sig.name}
+                      {sig.email || sig.name}
                     </span>
                     <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
@@ -867,7 +867,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       Rejected
                     </div>
                     <span style={{ fontSize: '0.35rem', color: '#64748B', maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={sig.email || sig.name}>
-                      {sig.email ? `(${sig.email})` : sig.name}
+                      {sig.email || sig.name}
                     </span>
                     <span style={{ fontSize: '0.32rem', color: '#64748B' }}>
                       {sig.date}
@@ -919,7 +919,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       {hoIsSigned ? 'Digitally Signed' : 'Rejected'}
                     </div>
                     <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={hoParsed.email || hoName}>
-                      {hoParsed.email ? `(${hoParsed.email})` : (hoName || 'MPG HO - MD Production')}
+                      {hoParsed.email || hoName || 'MPG HO - MD Production'}
                     </span>
                     {hoDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{hoDate}</span>}
                   </>
@@ -970,7 +970,7 @@ export const PrintReport: React.FC<PrintReportProps> = ({
                       {dirIsSigned ? 'Digitally Signed' : 'Rejected'}
                     </div>
                     <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }} title={dirParsed.email || dirName}>
-                      {dirParsed.email ? `(${dirParsed.email})` : dirName}
+                      {dirParsed.email || dirName}
                     </span>
                     {dirDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{dirDate}</span>}
                   </>
