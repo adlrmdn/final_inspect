@@ -7,7 +7,6 @@ import { PackagingService } from '../services/packaging_service';
 import { USER_GUIDELINES_SECTIONS } from '../services/user_guidelines';
 import { AIAgentService, getFuzzyMatchScore } from '../services/ai_agent_service';
 import { calculateDeductions } from '../utils/calculations';
-import { generateReportPdfBase64 } from '../utils/pdf_generator';
 
 import { ChatMessage } from '../hooks/useChatEngine';
 
@@ -721,155 +720,9 @@ export default function FormView({
     })();
   }, [packagingProjects.length]);
 
-  const handleCompleteProject = async () => {
-    if (!activePackagingProject) return;
-    if (isProcessing) return;
-    if (sessionEditMode) {
-      await showProfessionalAlert(
-        'Session Active',
-        'Please save or cancel the active inspection session before completing the project.',
-        'alert'
-      );
-      return;
-    }
-
-    if (!navigator.onLine) {
-      await showProfessionalAlert(
-        'Offline Required',
-        'You must be online to complete and sync this project. Please check your internet connection.',
-        'danger'
-      );
-      return;
-    }
-
-    const isStage1Done = !!(activeSession && (
-      activeSession.approval_status === 'approved' ||
-      (activeSession.approval_signature && activeSession.approval_signature.toLowerCase().includes('digitally signed'))
-    ));
-    const isStage2Done = !!(activeSession?.ho_approval_signature?.includes('Digitally Signed:'));
-    const isFullyVerified = isStage1Done && isStage2Done;
-
-    if (!isFullyVerified) {
-      await showProfessionalAlert(
-        'Verification Required',
-        'This project cannot be completed because it has not been digitally signed by both the factory representative and HO approver yet. Please send the verification email and obtain both approvals first.',
-        'alert'
-      );
-      return;
-    }
-
-    const confirmed = await showProfessionalConfirm(
-      'Complete & Sync Project',
-      'Are you sure you want to complete and sync this packaging project? This will lock the workspace and sync all data to the central database.'
-    );
-    if (!confirmed) return;
-
-    setIsProcessing(true);
-    setProcessingMessage('Completing & syncing packaging project...');
-    try {
-      // Calculate deductions
-      let targetSession = activeSession;
-      if (!targetSession && activePackagingProject.sessions && activePackagingProject.sessions.length > 0) {
-        const sorted = [...activePackagingProject.sessions].sort((a: any, b: any) => b.cycle_number - a.cycle_number);
-        targetSession = sorted[0];
-      }
-      const deductions = calculateDeductions(activePackagingProject, targetSession);
-
-      // Generate the final signed PDF report programmatically in the background
-      setProcessingMessage('Generating final signed PDF report...');
-      const signedPdf = await generateReportPdfBase64(
-        activePackagingProject,
-        targetSession,
-        getCycleName,
-        tempDefectImages
-      );
-
-      const updatedProject = {
-        ...activePackagingProject,
-        status: 'completed',
-        has_deduction: deductions.hasDeduction,
-        deduction_amount: deductions.deductionAmount,
-        verified_doc: signedPdf || activePackagingProject.verified_doc || '',
-        updated_at: new Date().toISOString()
-      };
-      const { base_report, base_lines, sessions, defect_images, ...projectHeader } = updatedProject;
-      setProcessingMessage('Completing & syncing packaging project...');
-      await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
-
-      const syncEngine = SyncEngine.getInstance();
-      await syncEngine.synchronize();
-
-      setActivePackagingProject(updatedProject);
-      await fetchPackagingProjects(true);
-      await showProfessionalAlert(
-        'Project Completed & Synced',
-        'Successfully completed and synchronized project with the central database.',
-        'success'
-      );
-    } catch (e) {
-      console.error('Failed to complete & sync project:', e);
-      await showProfessionalAlert('Completion & Sync Failed', `Failed: ${e}`, 'danger');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleRevertProject = async () => {
-    if (!activePackagingProject) return;
-    if (sessionEditMode) {
-      await showProfessionalAlert(
-        'Session Active',
-        'Please save or cancel the active inspection session before reverting the project.',
-        'alert'
-      );
-      return;
-    }
-
-    if (!navigator.onLine) {
-      await showProfessionalAlert(
-        'Offline Required',
-        'You must be online to revert this project. Please check your internet connection.',
-        'danger'
-      );
-      return;
-    }
-
-    const confirmed = await showProfessionalConfirm(
-      'Revert Project Completion',
-      'WARNING: Reverting a completed project will unlock it for editing. This action must only be used to correct genuine inspection mistakes and should NOT be abused. Reverting will immediately sync the status change back to the central database.\n\nAre you sure you want to proceed?'
-    );
-    if (!confirmed) return;
-
-    setIsProcessing(true);
-    setProcessingMessage('Reverting project completion status...');
-    try {
-      const updatedProject = {
-        ...activePackagingProject,
-        status: 'downloaded',
-        verified_doc: '', // Clear previous verification report PDF
-        updated_at: new Date().toISOString()
-      };
-      const { base_report, base_lines, sessions, defect_images, ...projectHeader } = updatedProject;
-      await PackagingService.getInstance().invokeSafe<void>('save_packaging_project', { project: projectHeader }, undefined);
-      await PackagingService.getInstance().invokeSafe<void>('save_project_verification_doc', { projectId: activePackagingProject.project_id, docBase64: '' }, undefined);
-
-      const syncEngine = SyncEngine.getInstance();
-      await syncEngine.synchronize();
-
-      setActivePackagingProject(updatedProject);
-      await fetchPackagingProjects(true);
-      await showProfessionalAlert(
-        'Project Reverted',
-        'Successfully reverted project completion status. The workspace is now unlocked for edits.',
-        'success'
-      );
-    } catch (e) {
-      console.error('Failed to revert project:', e);
-      await showProfessionalAlert('Revert Failed', `Failed: ${e}`, 'danger');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+  // handleCompleteProject / handleRevertProject removed: completion is now driven
+  // by the portal's Director approval (stage 3) — the console no longer completes,
+  // syncs RPA, or reverts projects manually.
 
   const handleSyncProject = async (_projectId: string) => {
     try {
@@ -1536,8 +1389,7 @@ export default function FormView({
 
         if (command === 'complete_project') {
           if (!activePackagingProject) return "Tidak ada proyek aktif.";
-          handleCompleteProject();
-          return "Menyelesaikan proyek QC...";
+          return "Penyelesaian proyek sekarang otomatis: proyek akan selesai (completed) setelah Director menyetujui inspeksi melalui alur approval portal (Factory Rep \u2192 MD Production \u2192 Director).";
         }
 
         if (command === 'sync_project') {
@@ -1795,8 +1647,6 @@ export default function FormView({
             hasNextVersionExists={hasNextVersionExists}
             getCycleName={getCycleName}
             handleMoveVersion={handleMoveVersion}
-            handleCompleteProject={handleCompleteProject}
-            handleRevertProject={handleRevertProject}
             handleRemovePackagingProject={handleRemovePackagingProject}
             setActiveSession={setActiveSession}
             setSelectedSizeTab={setSelectedSizeTab}

@@ -142,3 +142,30 @@ Both are guarded (`hasColumn`/`hasTable`) and re-runnable.
   time the signature triggers PDF regen.
 - The portal creates **no** console-owned tables; it only adds guarded nullable
   columns to existing ones.
+
+---
+
+## 10. Director workflow (2026-07-14) — three-stage chain, portal-driven completion
+
+**New chain:** QC (console) → Factory Rep (`qc.approve`) → **MD Production** (`qc.ho-approve`) → **Director** (`qc.director-approve`, NEW) — all keyed off the same `approval_token`.
+
+| Event | Portal action |
+|---|---|
+| Factory Rep approves | refresh `verified_doc` (server-side PDF), chain MD Prod email |
+| Factory Rep rejects | `approval_status='rejected'` + **reject-notif email to `inspector_email`** (back to QC) |
+| MD Prod approves | refresh `verified_doc`, **queue `job_trans_raf` RPA**, clear stale director stamp, chain Director email |
+| MD Prod rejects | `ho_approval_signature='Rejected:…'` + reject-notif to inspector (back to QC, full restart) |
+| Director approves | write `director_approval_signature`, regen final 3-sig PDF → `verified_doc`, **queue `invoice` + `deduction` RPA** (deduction = Σ `fabric_lines.deduction` + Σ `deduction_lines.amount`, only when > 0), **set `packaging_projects.status='completed'`**, 4-party completion email (QC/Factory Rep/MD Prod/Director) with signed PDF attached |
+| Director rejects | `director_approval_signature='Rejected:…'` **and clears `ho_approval_signature`** in one update → back to **MD Production only** (factory signature kept); MD Prod re-emailed with the reason. MD Prod re-approval clears the director stamp. |
+
+**New QMS columns** on `packaging_project_sessions` (portal migration `2026_07_14_000001`, mirrored in console DDL):
+- `director_approval_signature` — portal-written, same `Digitally Signed:`/`Rejected:` prefix contract as HO.
+- `inspector_email` — console-written from the device profile popup (blocking at app start; localStorage `chimera_qc_inspector_profile`; passed via `save_session_approval_info`). Used for reject notifs + completion email.
+
+**Console changes:** manual **Complete & Sync is removed** (completion is automatic at Director approval); the console **no longer queues or deletes** `invoice`/`deduction`/`job_trans_raf` on save (portal owns them; manual `trigger_partial_process_sync` remains). Console re-send (`save_session_approval_info`) resets ALL three signatures. PrintReport Box 4 (Authorized By / Director) now renders from `director_approval_signature`.
+
+**Standard PDF:** the portal renders the same inspection report server-side (`QcReportPdfService` + `qc/pdf/inspection-report` DomPDF blade, structural port of PrintReport.tsx) and refreshes `verified_doc` at every signature milestone — the console app no longer needs to be open for the document to carry the latest signatures. RPA `signed_doc` payloads use this document.
+
+**Settings:** `qc_director_approver_email` (Subcon Admin → Workflow, "Director Email Address(es)"), empty-aware fallback to `qc_ho_approver_email` → `subcon_cutting_approver_email`. Portal `rpa` DB connection via `RPA_DB_*` env.
+
+**Director in-app tab (2026-07-14):** portal-side only — a `subcon_admin` account whose email is in `qc_director_approver_email` sees a separated "Director" tab (`/subcon/admin/director-approvals`) listing HO-signed sessions awaiting authorization; its buttons open the same token-based `qc.director-approve` / `qc.director-decline` forms, so the signature contract ('MPG Director') and routing are unchanged and the console needs nothing. Legacy projects already `completed` under the old two-stage flow are excluded from the tab and refused by the guard (re-authorizing would re-queue a real invoice RPA).

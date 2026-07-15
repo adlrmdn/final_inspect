@@ -910,20 +910,56 @@ export const PrintReport: React.FC<PrintReportProps> = ({
           );
         })()}
 
-        {/* Box 4: Authorized By (Director) */}
-        <div className="print-signature-box">
-          <span className="print-signature-label">Authorized By</span>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
-            <span style={{ fontSize: '0.38rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
-              Awaiting Authorization
-            </span>
-          </div>
-          <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
-            <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
-              Director
-            </span>
-          </div>
-        </div>
+        {/* Box 4: Authorized By (Director) — populated from director_approval_signature
+            (same 'Digitally Signed:'/'Rejected:' prefix contract as the HO column) */}
+        {(() => {
+          const dirSigStr = activeSession.director_approval_signature || '';
+          const dirIsSigned = dirSigStr.includes('Digitally Signed:');
+          const dirIsRejected = dirSigStr.includes('Rejected:');
+          const dirDate = (() => {
+            const raw = dirSigStr.match(/\[UTC\+07:00:\s*([^\]]+)\]/)?.[1]?.trim() || '';
+            if (!raw) return '';
+            try { return convertToUTC7(new Date(raw.replace(' ', 'T') + '+07:00')); } catch { return raw; }
+          })();
+          const dirName = (dirIsSigned || dirIsRejected)
+            ? dirSigStr.replace('Digitally Signed:', '').replace('Rejected:', '').split('[')[0].trim()
+            : '';
+          return (
+            <div className="print-signature-box">
+              <span className="print-signature-label">Authorized By</span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, margin: '2px 0' }}>
+                {(dirIsSigned || dirIsRejected) ? (
+                  <>
+                    <div style={{ border: `1px solid ${dirIsSigned ? '#10B981' : '#EF4444'}`, borderRadius: '4px', padding: '1px 3.5px', fontSize: '0.38rem', fontWeight: 800, color: dirIsSigned ? '#10B981' : '#EF4444', background: dirIsSigned ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.06)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'inline-flex', alignItems: 'center', gap: '2px', marginBottom: '1px', lineHeight: '1' }}>
+                      {dirIsSigned ? (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}><polyline points="20 6 9 17 4 12" /></svg>
+                      ) : (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '2px', display: 'inline-block', verticalAlign: 'middle' }}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      )}
+                      {dirIsSigned ? 'Digitally Signed' : 'Rejected'}
+                    </div>
+                    <span style={{ fontSize: '0.35rem', color: '#64748B', fontWeight: 600, maxWidth: '75px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>{dirName}</span>
+                    {dirDate && <span style={{ fontSize: '0.32rem', color: '#64748B' }}>{dirDate}</span>}
+                  </>
+                ) : (
+                  <span style={{ fontSize: '0.38rem', color: '#94A3B8', fontStyle: 'italic', fontWeight: 500, textAlign: 'center' }}>
+                    Awaiting Authorization
+                  </span>
+                )}
+              </div>
+              <div className="print-signature-name" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', borderTop: '1px dashed #CBD5E1', paddingTop: '3px', marginTop: 'auto', width: '100%', boxSizing: 'border-box' }}>
+                {dirName && (
+                  <span style={{ fontSize: '0.52rem', fontWeight: 700, color: '#0F172A', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+                    {dirName}
+                  </span>
+                )}
+                <span style={{ fontSize: '0.4rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.02em', marginTop: '1px', lineHeight: 1 }}>
+                  Director
+                </span>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Print Footer Info */}

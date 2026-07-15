@@ -137,9 +137,18 @@ async fn save_session_approval_info(
     session_id: String,
     approval_token: String,
     approval_email: String,
+    inspector_name: Option<String>,
+    inspector_email: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        db::save_session_approval_info(&project_id, &session_id, &approval_token, &approval_email)
+        db::save_session_approval_info(
+            &project_id,
+            &session_id,
+            &approval_token,
+            &approval_email,
+            inspector_name.as_deref().unwrap_or(""),
+            inspector_email.as_deref().unwrap_or(""),
+        )
     })
     .await
     .map_err(|e| e.to_string())?

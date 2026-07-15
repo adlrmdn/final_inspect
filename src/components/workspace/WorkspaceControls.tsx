@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { generateReportPdfBase64 } from '../../utils/pdf_generator';
+import { getInspectorProfile } from '../../utils/inspector_profile';
 
 // Base URL of the verification web service. Customize this when deploying.
 const WEB_SERVICE_URL = 'https://vendor-portal.megaperintis.co.id';
@@ -12,8 +13,6 @@ interface WorkspaceControlsProps {
   hasNextVersionExists: () => boolean;
   getCycleName: (cycleNum: number) => string;
   handleMoveVersion: () => void;
-  handleCompleteProject: () => void;
-  handleRevertProject: () => void;
   handleRemovePackagingProject: (projectId: string) => void;
   setActiveSession: (session: any) => void;
   setSelectedSizeTab: (size: string) => void;
@@ -39,8 +38,6 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   hasNextVersionExists,
   getCycleName,
   handleMoveVersion,
-  handleCompleteProject,
-  handleRevertProject,
   handleRemovePackagingProject,
   setActiveSession,
   setSelectedSizeTab,
@@ -94,6 +91,12 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   // Check the content, not just presence, so a rejection doesn't count as approved.
   const isStage2Done = !!(activeSession?.ho_approval_signature?.includes('Digitally Signed:'));
   const isHoRejected = !!(activeSession?.ho_approval_signature?.includes('Rejected:'));
+  // Stage 3 (Director) — same prefix contract on director_approval_signature. A Director
+  // rejection also CLEARS ho_approval_signature (back to MD Production, NOT back to QC),
+  // so isDirectorRejected + !isStage2Done = waiting for MD Production to re-approve.
+  const directorSig: string = activeSession?.director_approval_signature || '';
+  const isStage3Done = directorSig.includes('Digitally Signed:');
+  const isDirectorRejected = directorSig.includes('Rejected:');
   const isFullyVerified = isStage1Done && isStage2Done;
 
   useEffect(() => {
@@ -160,13 +163,18 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
 
     setIsSendingEmail(true);
     try {
-      // Generate a secure single-use UUID token and store it in the database with the intended signer's email
+      // Generate a secure single-use UUID token and store it in the database with the intended signer's email.
+      // The device-registered inspector profile is stamped on too, so the portal can notify
+      // the inspector on rejections (back-to-QC) and on completion.
+      const inspectorProfile = getInspectorProfile();
       const token = crypto.randomUUID();
       await invoke('save_session_approval_info', {
         projectId: activePackagingProject.project_id,
         sessionId: activeSession.session_id,
         approvalToken: token,
-        approvalEmail: email
+        approvalEmail: email,
+        inspectorName: inspectorProfile?.name || null,
+        inspectorEmail: inspectorProfile?.email || null
       });
 
       // 1. Generate the PDF of the report view programmatically.
@@ -456,36 +464,96 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
               const isAwaitingStage1 = !isStage1Done && !isRejected && !!(activeSession?.approval_token);
 
               if (isFullyVerified) {
+                // Stage 1 + 2 signed. Stage 3 (Director) decides the final label:
+                // signed → fully Verified; otherwise the Director email is out.
                 return (
-                  <button
-                    type="button"
-                    className="btn-electric-outline"
-                    onClick={() => setShowPreview(true)}
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                    {!isStage3Done && (
+                      <span
+                        style={{
+                          height: '32px',
+                          boxSizing: 'border-box',
+                          padding: '0 0.85rem',
+                          fontSize: '0.72rem',
+                          color: '#6366F1',
+                          border: '1.5px solid rgba(99, 102, 241, 0.35)',
+                          background: 'rgba(99, 102, 241, 0.06)',
+                          fontWeight: 800,
+                          borderRadius: '10px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          lineHeight: '1',
+                          gap: '0.25rem',
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        Pending Director Authorization
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-electric-outline"
+                      onClick={() => setShowPreview(true)}
+                      style={{
+                        height: '32px',
+                        boxSizing: 'border-box',
+                        width: 'auto',
+                        padding: '0 0.85rem',
+                        fontSize: '0.72rem',
+                        color: '#10B981',
+                        borderColor: 'rgba(16, 185, 129, 0.28)',
+                        background: 'rgba(16, 185, 129, 0.05)',
+                        fontWeight: 800,
+                        borderRadius: '10px',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        lineHeight: '1',
+                        gap: '0.25rem',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                        <polyline points="22 4 12 14.01 9 11.01" />
+                      </svg>
+                      {isStage3Done ? 'Fully Verified' : 'Verified'}
+                    </button>
+                  </div>
+                );
+              } else if (isDirectorRejected && isStage1Done && !isStage2Done) {
+                // Director sent it back to MD Production: the HO signature was cleared,
+                // the factory confirmation stands. Nothing for QC to redo — read-only wait.
+                return (
+                  <span
                     style={{
                       height: '32px',
                       boxSizing: 'border-box',
-                      width: 'auto',
                       padding: '0 0.85rem',
                       fontSize: '0.72rem',
-                      color: '#10B981',
-                      borderColor: 'rgba(16, 185, 129, 0.28)',
-                      background: 'rgba(16, 185, 129, 0.05)',
+                      color: '#D97706',
+                      border: '1.5px solid rgba(217, 119, 6, 0.35)',
+                      background: 'rgba(217, 119, 6, 0.06)',
                       fontWeight: 800,
                       borderRadius: '10px',
-                      cursor: 'pointer',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       lineHeight: '1',
                       gap: '0.25rem',
                     }}
+                    title="The Director rejected the inspection and returned it to MD Production for re-approval. The factory confirmation is kept."
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                      <polyline points="22 4 12 14.01 9 11.01" />
+                      <polyline points="9 14 4 9 9 4" />
+                      <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
                     </svg>
-                    Verified
-                  </button>
+                    Returned by Director — Pending MD Prod
+                  </span>
                 );
               } else if (isHoRejected) {
                 const canReVerify = isOnline && !isProcessing;
@@ -699,35 +767,12 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
               return null;
             })()}
 
-            {/* 3. Complete / Partial Sync */}
+            {/* 3. Completion status / Partial Sync — manual "Complete & Sync" is GONE:
+                the portal completes the project (and queues invoice/deduction/RAF RPA)
+                when the Director approves. */}
             {activePackagingProject.status !== 'completed' ? (
               isBalanceMatching ? (
-                <button
-                  className="btn-electric-outline"
-                  onClick={handleCompleteProject}
-                  disabled={!isOnline || isProcessing || !isFullyVerified}
-                  title={!isOnline ? 'You must be online to complete & sync' : !isFullyVerified ? 'Both stage 1 and HO approval must be completed before syncing.' : undefined}
-                  style={{
-                    height: '32px',
-                    boxSizing: 'border-box',
-                    width: 'auto',
-                    padding: '0 0.85rem',
-                    fontSize: '0.72rem',
-                    color: (!isOnline || isProcessing || !isFullyVerified) ? 'var(--text-muted)' : '#10B981',
-                    borderColor: (!isOnline || isProcessing || !isFullyVerified) ? 'rgba(15, 23, 42, 0.16)' : 'rgba(16, 185, 129, 0.28)',
-                    background: (!isOnline || isProcessing || !isFullyVerified) ? 'rgba(15, 23, 42, 0.04)' : 'rgba(16, 185, 129, 0.05)',
-                    fontWeight: 800,
-                    borderRadius: '10px',
-                    cursor: (!isOnline || isProcessing || !isFullyVerified) ? 'not-allowed' : 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: '1',
-                    opacity: (!isOnline || isProcessing || !isFullyVerified) ? 0.5 : 1,
-                  }}
-                >
-                  Complete & Sync RAF
-                </button>
+                null
               ) : (
                 <button
                   className="btn-electric-outline"
@@ -757,47 +802,23 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                 </button>
               )
             ) : (
-              <>
-                <span
-                  className="electric-badge emerald"
-                  style={{
-                    fontSize: '0.72rem',
-                    height: '32px',
-                    boxSizing: 'border-box',
-                    padding: '0 0.85rem',
-                    borderRadius: '10px',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: 'normal',
-                  }}
-                >
-                  ✓ Completed & Synced RAF
-                </span>
-                <button
-                  className="btn-electric-outline"
-                  onClick={handleRevertProject}
-                  style={{
-                    height: '32px',
-                    boxSizing: 'border-box',
-                    width: 'auto',
-                    padding: '0 0.85rem',
-                    fontSize: '0.72rem',
-                    color: 'var(--amber-warm)',
-                    borderColor: 'rgba(245, 158, 11, 0.28)',
-                    background: 'rgba(245, 158, 11, 0.05)',
-                    fontWeight: 800,
-                    borderRadius: '10px',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    lineHeight: '1',
-                  }}
-                >
-                  Revert
-                </button>
-              </>
+              <span
+                className="electric-badge emerald"
+                title="Completed automatically when the Director authorized the inspection."
+                style={{
+                  fontSize: '0.72rem',
+                  height: '32px',
+                  boxSizing: 'border-box',
+                  padding: '0 0.85rem',
+                  borderRadius: '10px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: 'normal',
+                }}
+              >
+                ✓ Completed — Director Authorized
+              </span>
             )}
 
             {/* 4. Remove */}

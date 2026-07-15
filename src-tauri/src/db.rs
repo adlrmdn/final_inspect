@@ -537,6 +537,10 @@ pub fn init_tables() -> Result<(), String> {
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50)", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS approval_signature VARCHAR(255)", &[]);
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS ho_approval_signature VARCHAR(255)", &[]);
+    // Director stage (stage 3): portal writes the signature ('Digitally Signed:'/'Rejected:' prefix,
+    // same contract as ho_approval_signature); console writes inspector_email from the device profile.
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS director_approval_signature VARCHAR(255)", &[]);
+    let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS inspector_email VARCHAR(255)", &[]);
     // Optimistic concurrency lock — incremented on every save; 0/NULL clients bypass the check
     let _ = client.execute("ALTER TABLE packaging_project_sessions ADD COLUMN IF NOT EXISTS row_version INTEGER NOT NULL DEFAULT 1", &[]);
 
@@ -1001,36 +1005,10 @@ fn save_packaging_project_db_only(mut client: postgres::Client, project: Packagi
         &[&project_id, &project.production_group],
     );
 
-    // Queue RPA jobs only on the transition to completed, not on every re-save
-    if project.status == "completed" && !db_was_completed {
-        if let Ok(mut rpa_client) = get_connection_rpa() {
-            let amount = final_sales_price * project.po_qty.unwrap_or(0.0);
-            let invoice_payload = serde_json::json!({
-                "PO": project.po_info.clone().unwrap_or_default(),
-                "vendor_name": project.po_vendor.clone().unwrap_or_default(),
-                "signed_doc": project.verified_doc.clone().unwrap_or_default(),
-                "amount": amount,
-            });
-            let invoice_exists: bool = rpa_client.query_one(
-                "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'invoice' AND status IN ('incomplete', 'processing'))",
-                &[&project_id]
-            ).map(|r| r.get(0)).unwrap_or(false);
-            if !invoice_exists {
-                let _ = rpa_client.execute(
-                    "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload) VALUES ('packaging_project', $1, 'invoice', 'incomplete', $2)",
-                    &[&project_id, &invoice_payload],
-                );
-            }
-        }
-        let _ = queue_job_trans_raf_internal(&project_id);
-    } else {
-        if let Ok(mut rpa_client) = get_connection_rpa() {
-            let _ = rpa_client.execute(
-                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type IN ('invoice', 'deduction') AND status IN ('incomplete', 'failed')",
-                &[&project_id],
-            );
-        }
-    }
+    // RPA queueing moved to the portal's approval chain (Director workflow):
+    // job_trans_raf fires at MD Production approval, invoice/deduction at
+    // Director approval. The console no longer queues OR deletes those jobs on
+    // save — a re-save here must never wipe portal-queued work.
 
     Ok(project_id)
 }
@@ -1464,103 +1442,12 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
 
     } // end: new project seeding block
 
-    // Universal RPA Queue Sync Triggers — only fire on the transition to completed, not on every re-save
-    if project.status == "completed" && !was_already_completed {
-        let mut rpa_client = get_connection_rpa()?;
-        
-        // 1. Resolve latest session version
-        let mut latest_version = "v1.0".to_string();
-        if let Ok(row) = client.query_one(
-            "SELECT version FROM packaging_project_sessions 
-             WHERE project_id = $1 
-             ORDER BY cycle_number DESC LIMIT 1",
-            &[&project_id]
-        ) {
-            if let Some(v) = row.get::<_, Option<String>>(0) {
-                latest_version = v;
-            }
-        }
-
-        // 2. Prepare payloads
-        let amount = project.sales_price.unwrap_or(0.0) * project.po_qty.unwrap_or(0.0);
-        let signed_doc = project.verified_doc.clone().unwrap_or_default();
-
-        let invoice_payload = serde_json::json!({
-            "PO": project.po_info.clone().unwrap_or_default(),
-            "vendor_name": project.po_vendor.clone().unwrap_or_default(),
-            "latest_version": latest_version,
-            "signed_doc": signed_doc,
-            "amount": amount,
-        });
-
-        // Check invoice job
-        let invoice_exists: bool = rpa_client.query_one(
-            "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'invoice' AND status IN ('incomplete', 'processing'))",
-            &[&project_id]
-        ).map(|r| r.get(0)).unwrap_or(false);
-
-        if !invoice_exists {
-            rpa_client.execute(
-                "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload)
-                 VALUES ('packaging_project', $1, 'invoice', 'incomplete', $2)",
-                &[&project_id, &invoice_payload]
-            ).map_err(|e| format!("Failed to queue invoice RPA job: {}", e))?;
-        } else {
-            rpa_client.execute(
-                "UPDATE rpa_queues SET payload = $2, updated_at = NOW()
-                 WHERE entity_id = $1 AND rpa_type = 'invoice' AND status = 'incomplete'",
-                &[&project_id, &invoice_payload]
-            ).map_err(|e| format!("Failed to update invoice RPA job payload: {}", e))?;
-        }
-
-        // Check deduction job
-        if project.has_deduction.unwrap_or(false) && project.deduction_amount.unwrap_or(0.0) > 0.0 {
-            let deduction_payload = serde_json::json!({
-                "PO": project.po_info.clone().unwrap_or_default(),
-                "vendor_name": project.po_vendor.clone().unwrap_or_default(),
-                "latest_version": latest_version,
-                "signed_doc": signed_doc,
-                "amount": project.deduction_amount.unwrap_or(0.0),
-            });
-
-            let deduction_exists: bool = rpa_client.query_one(
-                "SELECT EXISTS(SELECT 1 FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('incomplete', 'processing'))",
-                &[&project_id]
-            ).map(|r| r.get(0)).unwrap_or(false);
-
-            if !deduction_exists {
-                rpa_client.execute(
-                    "INSERT INTO rpa_queues (entity_type, entity_id, rpa_type, status, payload)
-                     VALUES ('packaging_project', $1, 'deduction', 'incomplete', $2)",
-                    &[&project_id, &deduction_payload]
-                ).map_err(|e| format!("Failed to queue deduction RPA job: {}", e))?;
-            } else {
-                rpa_client.execute(
-                    "UPDATE rpa_queues SET payload = $2, updated_at = NOW()
-                     WHERE entity_id = $1 AND rpa_type = 'deduction' AND status = 'incomplete'",
-                    &[&project_id, &deduction_payload]
-                ).map_err(|e| format!("Failed to update deduction RPA job payload: {}", e))?;
-            }
-        } else {
-            // Delete any incomplete or failed deduction jobs if deductions are removed or zero
-            rpa_client.execute(
-                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type = 'deduction' AND status IN ('incomplete', 'failed')",
-                &[&project_id]
-            ).ok();
-        }
-
-        // 3. Queue 'job_trans_raf' RPA job
-        queue_job_trans_raf_internal(&project_id)?;
-    } else {
-        // If status is NOT completed (e.g. reverted to downloaded or is a draft save),
-        // we delete any incomplete or failed 'invoice' and 'deduction' jobs, but NOT 'job_trans_raf'.
-        if let Ok(mut rpa_client) = get_connection_rpa() {
-            rpa_client.execute(
-                "DELETE FROM rpa_queues WHERE entity_id = $1 AND rpa_type IN ('invoice', 'deduction') AND status IN ('incomplete', 'failed')",
-                &[&project_id]
-            ).ok();
-        }
-    }
+    // RPA queueing moved to the portal's approval chain (Director workflow):
+    // job_trans_raf is queued when MD Production approves, invoice/deduction
+    // when the Director approves — the portal also marks the project completed.
+    // The console no longer queues OR deletes those jobs on save, so a re-save
+    // can never wipe portal-queued work. (Manual partial RAF sync remains via
+    // trigger_partial_process_sync.)
 
     Ok(project_id)
 }
@@ -1995,7 +1882,8 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                     check_other_1, check_other_1_label, check_other_2, check_other_2_label,
                     qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
                     aql, level_val, factory_representative, inspector, version, result,
-                    approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature
+                    approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
+                    director_approval_signature, inspector_email
              FROM packaging_project_sessions 
              WHERE project_id = $1 
              ORDER BY cycle_number ASC",
@@ -2116,6 +2004,8 @@ pub fn get_packaging_projects() -> Result<Value, String> {
                 "approval_email": s_row.get::<_, Option<String>>(40),
                 "approval_signature": s_row.get::<_, Option<String>>(41),
                 "ho_approval_signature": s_row.get::<_, Option<String>>(42),
+                "director_approval_signature": s_row.get::<_, Option<String>>(43),
+                "inspector_email": s_row.get::<_, Option<String>>(44),
                 "report_lines": session_lines_json,
                 "deduction_lines": deduction_lines_json
             }));
@@ -2355,7 +2245,7 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
                 qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs, finishing_pcs, packing_pcs, sampling_pcs,
                 aql, level_val, factory_representative, inspector, version, result,
                 approval_status, approved_by, approved_at::text, approval_source, approval_token::text, approval_email, approval_signature, ho_approval_signature,
-                row_version
+                row_version, director_approval_signature, inspector_email
          FROM packaging_project_sessions
          WHERE project_id = $1
          ORDER BY cycle_number ASC",
@@ -2477,6 +2367,8 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
             "approval_signature": s_row.get::<_, Option<String>>(41),
             "ho_approval_signature": s_row.get::<_, Option<String>>(42),
             "row_version": s_row.get::<_, Option<i32>>(43),
+            "director_approval_signature": s_row.get::<_, Option<String>>(44),
+            "inspector_email": s_row.get::<_, Option<String>>(45),
             "report_lines": session_lines_json,
             "deduction_lines": deduction_lines_json
         }));
@@ -2607,16 +2499,22 @@ pub fn write_offline_projects_cache(app: AppHandle, data: Value) -> Result<(), S
 }
 
 
-pub fn save_session_approval_info(project_id: &str, session_id: &str, approval_token: &str, approval_email: &str) -> Result<(), String> {
+pub fn save_session_approval_info(project_id: &str, session_id: &str, approval_token: &str, approval_email: &str, inspector_name: &str, inspector_email: &str) -> Result<(), String> {
     ensure_init();
     let mut client = get_connection_qms()?;
+    // Re-send resets the WHOLE chain (full restart): factory-rep, HO, and
+    // director signatures are all cleared. The inspector's device profile
+    // (name + email) is stamped on so the portal can notify them of rejections
+    // and the completion; the manually-entered inspector field wins if present.
     client.execute(
         "UPDATE packaging_project_sessions
          SET approval_token = CAST($1::text AS uuid), approval_email = $2, approval_status = NULL,
              approval_signature = NULL, approved_by = NULL, approved_at = NULL,
-             ho_approval_signature = NULL
+             ho_approval_signature = NULL, director_approval_signature = NULL,
+             inspector_email = NULLIF($5, ''),
+             inspector = CASE WHEN inspector IS NULL OR inspector = '' THEN NULLIF($6, '') ELSE inspector END
          WHERE session_id = $3 AND project_id = $4",
-        &[&approval_token, &approval_email, &session_id, &project_id]
+        &[&approval_token, &approval_email, &session_id, &project_id, &inspector_email, &inspector_name]
     ).map_err(|e| format!("Failed to update approval token and email: {}", e))?;
     Ok(())
 }
@@ -2628,7 +2526,7 @@ pub fn reset_session_approval_info(project_id: &str, session_id: &str) -> Result
         "UPDATE packaging_project_sessions
          SET approval_token = NULL, approval_email = NULL, approval_status = NULL,
              approved_by = NULL, approved_at = NULL, approval_signature = NULL,
-             ho_approval_signature = NULL
+             ho_approval_signature = NULL, director_approval_signature = NULL
          WHERE session_id = $1 AND project_id = $2",
         &[&session_id, &project_id]
     ).map_err(|e| format!("Failed to reset approval info: {}", e))?;

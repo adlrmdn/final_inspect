@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import './App.css';
 import FormView from './components/FormView';
+import { InspectorProfileGate } from './components/InspectorProfileGate';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useChatEngine, ChatEngineActions } from './hooks/useChatEngine';
 
@@ -89,6 +90,8 @@ function App() {
           />
         </section>
       </div>
+      {/* Blocking device-profile gate: name + email required before the app can be used */}
+      <InspectorProfileGate />
     </main>
   );
 }
