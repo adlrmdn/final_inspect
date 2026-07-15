@@ -65,10 +65,11 @@ export const InspectorProfileGate: React.FC = () => {
   if (!modalOpen) {
     return (
       <div
+        className="inspector-profile-chip no-print"
         style={{
           position: 'fixed',
-          bottom: '10px',
-          left: '10px',
+          top: '10px',
+          right: '90px',
           zIndex: 9000,
           display: 'inline-flex',
           alignItems: 'center',

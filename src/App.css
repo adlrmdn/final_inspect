@@ -3436,3 +3436,11 @@ input[type=number] {
     margin-top: auto;
     color: #0F172A;
   }
+
+  /* Exclude inspector profile chip from print views */
+  @media print {
+    .no-print,
+    .inspector-profile-chip {
+      display: none !important;
+    }
+  }
