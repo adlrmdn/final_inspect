@@ -7,6 +7,7 @@ import { PackagingService } from '../services/packaging_service';
 import { USER_GUIDELINES_SECTIONS } from '../services/user_guidelines';
 import { AIAgentService, getFuzzyMatchScore } from '../services/ai_agent_service';
 import { calculateDeductions } from '../utils/calculations';
+import { getInspectorProfile, saveInspectorProfile } from '../utils/inspector_profile';
 
 import { ChatMessage } from '../hooks/useChatEngine';
 
@@ -574,6 +575,14 @@ export default function FormView({
       try {
         newRowVersion = await invoke<number>('save_packaging_session', { session: PackagingService.getInstance().sanitizeSession(savedSession) });
         setActiveSession((prev: any) => prev ? { ...prev, row_version: newRowVersion } : prev);
+        
+        // Overwrite the local inspector profile name if it has been edited in the session
+        if (savedSession.inspector) {
+          const profile = getInspectorProfile();
+          if (profile && profile.name !== savedSession.inspector) {
+            saveInspectorProfile({ ...profile, name: savedSession.inspector });
+          }
+        }
       } catch (saveErr: any) {
         if (String(saveErr).includes('CONFLICT')) {
           await showProfessionalAlert(
@@ -950,7 +959,7 @@ export default function FormView({
         approved_at: null,           // Reset audit
         approval_token: null,        // Reset token
         approval_email: null,        // Reset email
-        inspector: currentSession.inspector || '',
+        inspector: currentSession.inspector || getInspectorProfile()?.name || '',
         version: currentSession.version || '1.0',
         result: 'Pending',
         report_lines: clonedLines
