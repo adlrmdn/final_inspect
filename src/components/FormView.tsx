@@ -202,8 +202,10 @@ export default function FormView({
   React.useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
   const [sessionEditMode, setSessionEditMode] = useState<boolean>(false);
   const isSessionVerified = !!(
-    activeSession?.approval_status === 'approved' ||
-    activeSession?.approval_signature?.toLowerCase().includes('digitally signed')
+    (activeSession?.approval_status === 'approved' ||
+      activeSession?.approval_signature?.toLowerCase().includes('digitally signed')) &&
+    activeSession?.approval_status !== 'rejected' &&
+    !activeSession?.ho_approval_signature?.includes('Rejected:')
   );
   // Lock ALL versions when any session has a pending or completed verification.
   // Prevents editing older versions while a newer one is awaiting approval.
@@ -216,7 +218,7 @@ export default function FormView({
         return false;
       }
       return (
-        s.approval_token ||
+        (s.approval_token && s.approval_status !== 'rejected') ||
         s.approval_status === 'approved' ||
         s.approval_signature?.toLowerCase().includes('digitally signed')
       );
