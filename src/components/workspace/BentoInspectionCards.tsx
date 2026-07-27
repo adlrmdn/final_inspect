@@ -1317,104 +1317,108 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
           >
             3. Production Status
           </h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                CUTTING PCS
-              </label>
-              <input
-                type="number"
-                value={activeSession.cutting_pcs === 0 ? '' : activeSession.cutting_pcs ?? ''}
-                placeholder="0"
-                onFocus={(e) => e.target.select()}
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => {
-                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
-                  e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, cutting_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
-                }}
-                className="qms-num-input"
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
-              />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  CUTTING PCS
+                </label>
+                <input
+                  type="number"
+                  value={activeSession.cutting_pcs === 0 ? '' : activeSession.cutting_pcs ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    setActiveSession((prev: any) => ({ ...prev, cutting_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                  }}
+                  className="qms-num-input"
+                  style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  SEWING PCS
+                </label>
+                <input
+                  type="number"
+                  value={activeSession.sewing_pcs === 0 ? '' : activeSession.sewing_pcs ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    setActiveSession((prev: any) => ({ ...prev, sewing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                  }}
+                  className="qms-num-input"
+                  style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  FINISHING PCS
+                </label>
+                <input
+                  type="number"
+                  value={activeSession.finishing_pcs === 0 ? '' : activeSession.finishing_pcs ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    setActiveSession((prev: any) => ({ ...prev, finishing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                  }}
+                  className="qms-num-input"
+                  style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  PACKING PCS
+                </label>
+                <input
+                  type="number"
+                  value={activeSession.packing_pcs === 0 ? '' : activeSession.packing_pcs ?? ''}
+                  placeholder="0"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
+                    e.target.value = cleanVal;
+                    setActiveSession((prev: any) => ({ ...prev, packing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
+                  }}
+                  className="qms-num-input"
+                  style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+                />
+              </div>
             </div>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                SEWING PCS
-              </label>
-              <input
-                type="number"
-                value={activeSession.sewing_pcs === 0 ? '' : activeSession.sewing_pcs ?? ''}
-                placeholder="0"
-                onFocus={(e) => e.target.select()}
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => {
-                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
-                  e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, sewing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
-                }}
-                className="qms-num-input"
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                FINISHING PCS
-              </label>
-              <input
-                type="number"
-                value={activeSession.finishing_pcs === 0 ? '' : activeSession.finishing_pcs ?? ''}
-                placeholder="0"
-                onFocus={(e) => e.target.select()}
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => {
-                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
-                  e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, finishing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
-                }}
-                className="qms-num-input"
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                PACKING PCS
-              </label>
-              <input
-                type="number"
-                value={activeSession.packing_pcs === 0 ? '' : activeSession.packing_pcs ?? ''}
-                placeholder="0"
-                onFocus={(e) => e.target.select()}
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => {
-                  const cleanVal = e.target.value.replace(/^0+(?=\d)/, '');
-                  e.target.value = cleanVal;
-                  setActiveSession((prev: any) => ({ ...prev, packing_pcs: cleanVal === '' ? 0 : parseInt(cleanVal, 10) || 0 }));
-                }}
-                className="qms-num-input"
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
-                RETUR KAIN
-              </label>
-              {/* Nullable on purpose: empty = not measured. A value > 0 overrides the
-                  vendor-entered Retur Kain on the MD Production approval form. */}
-              <input
-                type="number"
-                step="any"
-                min="0"
-                value={activeSession.retur_kain ?? ''}
-                placeholder="—"
-                onFocus={(e) => e.target.select()}
-                onWheel={(e) => e.currentTarget.blur()}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setActiveSession((prev: any) => ({ ...prev, retur_kain: v === '' ? null : Math.max(0, parseFloat(v) || 0) }));
-                }}
-                className="qms-num-input"
-                style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
-              />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem', borderTop: '1px dashed rgba(15, 23, 42, 0.08)', paddingTop: '0.75rem' }}>
+              <div>
+                <label style={{ fontSize: '0.58rem', fontWeight: 800, color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>
+                  RETUR KAIN
+                </label>
+                {/* Nullable on purpose: empty = not measured. A value > 0 overrides the
+                    vendor-entered Retur Kain on the MD Production approval form. */}
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={activeSession.retur_kain ?? ''}
+                  placeholder="—"
+                  onFocus={(e) => e.target.select()}
+                  onWheel={(e) => e.currentTarget.blur()}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setActiveSession((prev: any) => ({ ...prev, retur_kain: v === '' ? null : Math.max(0, parseFloat(v) || 0) }));
+                  }}
+                  className="qms-num-input"
+                  style={{ width: '100%', padding: '0.35rem 0.45rem', fontSize: '0.74rem', border: '2px solid rgba(15, 23, 42, 0.16)', borderRadius: '8px', outline: 'none' }}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1623,34 +1627,38 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
         </h4>
         <div
           style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr',
-            gap: '0.5rem',
             background: '#F8FAFC',
             padding: '0.85rem',
             borderRadius: '12px',
             border: '2px solid rgba(15, 23, 42, 0.12)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.75rem',
           }}
         >
-          <div>
-            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>CUTTING PCS</span>
-            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.cutting_pcs}</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
+            <div>
+              <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>CUTTING PCS</span>
+              <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.cutting_pcs}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>SEWING PCS</span>
+              <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.sewing_pcs}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>FINISHING PCS</span>
+              <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.finishing_pcs}</strong>
+            </div>
+            <div>
+              <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>PACKING PCS</span>
+              <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.packing_pcs}</strong>
+            </div>
           </div>
-          <div>
-            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>SEWING PCS</span>
-            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.sewing_pcs}</strong>
-          </div>
-          <div>
-            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>FINISHING PCS</span>
-            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.finishing_pcs}</strong>
-          </div>
-          <div>
-            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>PACKING PCS</span>
-            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.packing_pcs}</strong>
-          </div>
-          <div>
-            <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>RETUR KAIN</span>
-            <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.retur_kain ?? '—'}</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem', borderTop: '1px dashed rgba(15, 23, 42, 0.08)', paddingTop: '0.75rem' }}>
+            <div>
+              <span style={{ fontSize: '0.58rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.15rem' }}>RETUR KAIN</span>
+              <strong style={{ fontSize: '0.76rem', color: 'var(--deep-ocean)' }}>{activeSession.retur_kain ?? '—'}</strong>
+            </div>
           </div>
         </div>
       </div>
