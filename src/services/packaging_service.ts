@@ -4,8 +4,16 @@ export class PackagingService {
   private static instance: PackagingService | null = null;
   private STORAGE_KEY_REMOVALS = 'packaging_offline_removals';
   private cachedProjects: any[] = [];
+  // Only this project's verified_doc (its multi-MB base64 PDF) is allowed to
+  // survive a cache write — see saveStoredProjects(). Every other cached
+  // project keeps its lightweight summary fields only.
+  private activeProjectId: string | null = null;
 
   private constructor() {}
+
+  public setActiveProjectId(id: string | null): void {
+    this.activeProjectId = id;
+  }
 
   public static getInstance(): PackagingService {
     if (!PackagingService.instance) {
@@ -200,9 +208,21 @@ export class PackagingService {
   }
 
   public async saveStoredProjects(projects: any[]): Promise<void> {
-    this.cachedProjects = projects;
+    // Strip verified_doc (the multi-MB base64 PDF) from every project except
+    // whichever one is currently open. Without this, the offline cache would
+    // accumulate a full PDF for every project ever opened and re-load all of
+    // them into memory on every app launch — the PDF should only ever be
+    // resident for the project you actually have open right now.
+    const pruned = projects.map((p: any) => {
+      if (p && p.project_id !== this.activeProjectId && Object.prototype.hasOwnProperty.call(p, 'verified_doc')) {
+        const { verified_doc, ...rest } = p;
+        return rest;
+      }
+      return p;
+    });
+    this.cachedProjects = pruned;
     try {
-      await invoke('write_offline_projects_cache', { data: projects });
+      await invoke('write_offline_projects_cache', { data: pruned });
     } catch (e) {
       console.error('Failed to write projects cache to disk:', e);
     }
@@ -360,6 +380,9 @@ export class PackagingService {
         await this.saveStoredProjects(merged);
       } else if (cmd === 'get_packaging_project_details') {
         const detailProj = res as any;
+        // This is the one project allowed to keep its verified_doc in the cache —
+        // set it before saveStoredProjects() so its own PDF isn't pruned out.
+        this.activeProjectId = detailProj.project_id;
         const projects = this.getStoredProjects();
         const index = projects.findIndex(item => item.project_id === detailProj.project_id);
         if (index >= 0) {

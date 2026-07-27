@@ -1473,9 +1473,11 @@ export default function FormView({
 
   useEffect(() => {
     AIAgentService.getInstance().setActiveProjectId(activePackagingProject?.project_id || null);
+    PackagingService.getInstance().setActiveProjectId(activePackagingProject?.project_id || null);
     // Cleanup on unmount
     return () => {
       AIAgentService.getInstance().setActiveProjectId(null);
+      PackagingService.getInstance().setActiveProjectId(null);
     };
   }, [activePackagingProject]);
 
