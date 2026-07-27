@@ -284,11 +284,10 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
                               setIsDropdownOpen(false);
                               setSearchQuery('');
                               if (isDownloaded) {
-                                await showProfessionalAlert(
-                                  'Style Already Active',
-                                  `The style '${act.article_name}' (${act.production_group}) is already active in your directory. To inspect this style, please open it from the Active Inspection Workspaces list below.`,
-                                  'alert'
-                                );
+                                const existing = packagingProjects.find((p: any) => p.production_group === act.production_group);
+                                if (existing) {
+                                  setActivePackagingProject(existing);
+                                }
                               } else {
                                 setSelectedActivity(act);
                               }

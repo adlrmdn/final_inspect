@@ -344,6 +344,7 @@ async fn send_email_report(
             .map_err(|e| e.to_string())?
             .port(587)
             .credentials(creds)
+            .timeout(Some(std::time::Duration::from_secs(15)))
             .build();
 
         let display_name = Some("MPG QC Console System".to_string());

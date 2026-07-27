@@ -2110,7 +2110,12 @@ pub fn get_packaging_projects_summary() -> Result<Value, String> {
     ensure_init();
     let mut client = get_connection_qms()?;
     
-    let rows = client.query("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, verified_doc, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects WHERE status NOT IN ('removed', 'removed_completed') ORDER BY created_at DESC", &[])
+    // Note: verified_doc (the multi-MB base64 PDF) is intentionally excluded here.
+    // Nothing in the directory/summary UI reads it — only the single active project
+    // (fetched via get_packaging_project_details) needs it. Including it here meant
+    // every project's full PDF was re-fetched, re-serialized, and held in memory/localStorage
+    // on every list refresh (load, every mutation, every real-time 'approval-updated' event).
+    let rows = client.query("SELECT project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, created_at, updated_at FROM packaging_projects WHERE status NOT IN ('removed', 'removed_completed') ORDER BY created_at DESC", &[])
         .map_err(|e| format!("Failed to query packaging projects summary: {}", e))?;
 
     let mut projects = Vec::new();
@@ -2129,11 +2134,10 @@ pub fn get_packaging_projects_summary() -> Result<Value, String> {
         let cmt_cut_job_id: Option<String> = row.get(11);
         let cmt_pak_job_id: Option<String> = row.get(12);
         let sales_price: Option<f64> = row.get(13);
-        let verified_doc: Option<String> = row.get(14);
-        let has_deduction: bool = row.get(15);
-        let deduction_amount: f64 = row.get(16);
-        let created_at: NaiveDateTime = row.get(17);
-        let updated_at: NaiveDateTime = row.get(18);
+        let has_deduction: bool = row.get(14);
+        let deduction_amount: f64 = row.get(15);
+        let created_at: NaiveDateTime = row.get(16);
+        let updated_at: NaiveDateTime = row.get(17);
 
         // Fetch minimal session summaries
         let session_rows = client.query(
@@ -2202,7 +2206,6 @@ pub fn get_packaging_projects_summary() -> Result<Value, String> {
             "cmt_cut_job_id": cmt_cut_job_id,
             "cmt_pak_job_id": cmt_pak_job_id,
             "sales_price": sales_price,
-            "verified_doc": verified_doc,
             "has_deduction": has_deduction,
             "deduction_amount": deduction_amount,
             "created_at": created_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
@@ -3329,18 +3332,18 @@ mod tests {
     fn test_save_project_live() {
         let project = PackagingProject {
             project_id: "TEST_LIVE_DOWNLOAD_123".to_string(),
-            plm_id: "PLM/26/01/00036".to_string(),
+            plm_id: "TEST_PLM_LIVE_999999".to_string(),
             brand: "Minimal".to_string(),
             season: "FALL-26".to_string(),
             article_name: "Minimal Viviene Blazer Black".to_string(),
-            production_group: "MPG/PRG/2605/000192".to_string(),
+            production_group: "TEST_PRG_LIVE_999999".to_string(),
             po_info: Some("PO_TEST".to_string()),
             po_qty: Some(100.0),
             po_plan_date: Some("2026-06-11".to_string()),
             po_vendor: Some("Vendor".to_string()),
             status: "downloaded".to_string(),
-            cmt_cut_job_id: None,
-            cmt_pak_job_id: None,
+            cmt_cut_job_id: Some("TEST_JOB_CUT_999".to_string()),
+            cmt_pak_job_id: Some("TEST_JOB_PAK_999".to_string()),
             sales_price: None,
             verified_doc: None,
             has_deduction: None,
@@ -3354,8 +3357,9 @@ mod tests {
         assert!(res.is_ok(), "Expected live save to succeed: {:?}", res);
 
         // Clean up mock project from database after verification to avoid leaking mock values into the active directory
-        let delete_res = delete_packaging_project("TEST_LIVE_DOWNLOAD_123");
-        assert!(delete_res.is_ok(), "Failed to clean up test project after test: {:?}", delete_res);
+        if let Ok(mut client) = get_connection_qms() {
+            let _ = client.execute("DELETE FROM packaging_projects WHERE project_id = 'TEST_LIVE_DOWNLOAD_123' OR production_group = 'TEST_PRG_LIVE_999999'", &[]);
+        }
     }
 
     #[test]

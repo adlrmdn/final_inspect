@@ -995,11 +995,17 @@ export default function FormView({
         docBase64: '' 
       }, undefined);
 
-      // Refresh project list and state
-      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+      // Refresh the lightweight directory list, and separately fetch full detail
+      // (report_lines etc.) for just the active project — avoids re-fetching every
+      // other project's full session/report data (and their verified_doc PDFs).
+      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects_summary', {}, []);
       updatePackagingProjects(res || []);
 
-      const refreshedProj = res?.find((p: any) => p.project_id === activePackagingProject.project_id);
+      const refreshedProj = await PackagingService.getInstance().invokeSafe<any>(
+        'get_packaging_project_details',
+        { projectId: activePackagingProject.project_id },
+        null
+      );
       if (refreshedProj) {
         setActivePackagingProject(refreshedProj);
         const newlyCreatedSession = refreshedProj.sessions?.find((s: any) => s.session_id === nextSessionId);
@@ -1514,7 +1520,7 @@ export default function FormView({
             setDeviceProjectIds(nextDeviceProjects);
           }
 
-          const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+          const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects_summary', {}, []);
           updatePackagingProjects(res || []);
           setSelectedActivity(null);
           await showProfessionalAlert(
@@ -1556,7 +1562,7 @@ export default function FormView({
         }
 
         // Fetch refreshed list from DB and update the projects list
-        const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+        const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects_summary', {}, []);
         updatePackagingProjects(res || []);
         
         setSelectedActivity(null);
@@ -1590,10 +1596,15 @@ export default function FormView({
     try {
       // Re-fetch baseline and size templates from D365
       await PackagingService.getInstance().invokeSafe<void>('refresh_packaging_project_lines', { projectId: snapshotProjectId }, undefined);
-      // Refresh all projects and re-select the active project & session
-      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects', {}, []);
+      // Refresh the lightweight directory list, and separately fetch full detail
+      // for just the active project & session.
+      const res = await PackagingService.getInstance().invokeSafe<any[]>('get_packaging_projects_summary', {}, []);
       updatePackagingProjects(res || []);
-      const refreshed = res?.find((p: any) => p.project_id === snapshotProjectId);
+      const refreshed = await PackagingService.getInstance().invokeSafe<any>(
+        'get_packaging_project_details',
+        { projectId: snapshotProjectId },
+        null
+      );
       if (refreshed) {
         setActivePackagingProject(refreshed);
         const updatedSes = refreshed.sessions?.find((s: any) => s.session_id === snapshotSessionId);

@@ -222,13 +222,33 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
       // regardless of whether the console stays running after Stage 1.
       await handleUploadVerificationDoc(activePackagingProject.project_id, attachmentData, true);
 
-      await invoke('send_email_report', {
-        recipient: email,
-        subject: subjectInput.trim(),
-        htmlBody: emailCoverHtml,
-        attachmentBody: attachmentData,
-        attachmentFilename: attFilename
-      });
+      try {
+        await invoke('send_email_report', {
+          recipient: email,
+          subject: subjectInput.trim(),
+          htmlBody: emailCoverHtml,
+          attachmentBody: attachmentData,
+          attachmentFilename: attFilename
+        });
+      } catch (smtpErr) {
+        // Local SMTP (port 587) can be firewalled or time out on some networks.
+        // Fall back to the web service, which dispatches the email server-side.
+        console.warn('Direct SMTP dispatch failed, falling back to web service:', smtpErr);
+        const fallbackResponse = await fetch(`${WEB_SERVICE_URL}/api/qc/send-verification-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recipient: email,
+            subject: subjectInput.trim(),
+            html_body: emailCoverHtml,
+            attachment_body: attachmentData,
+            attachment_filename: attFilename
+          })
+        });
+        if (!fallbackResponse.ok) {
+          throw new Error(`Both direct SMTP and web service dispatch failed: ${fallbackResponse.statusText}`);
+        }
+      }
       setIsSendEmailOpen(false);
       await showProfessionalAlert(
         'Email Dispatched',
