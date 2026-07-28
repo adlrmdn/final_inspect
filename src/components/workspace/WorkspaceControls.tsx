@@ -109,19 +109,13 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
 
     setIsSendingEmail(true);
     try {
-      // Generate a secure single-use UUID token and store it in the database with the intended signer's email.
-      // The device-registered inspector profile is stamped on too, so the portal can notify
-      // the inspector on rejections (back-to-QC) and on completion.
+      // Generate a secure single-use UUID token for the Approve/Reject links. This is only
+      // persisted to the DB (which resets the whole approval chain and flips the UI into
+      // "awaiting approval") once the email has actually been dispatched successfully —
+      // otherwise a failed send leaves the project stuck showing "waiting approval" with
+      // no recipient ever having received a link.
       const inspectorProfile = getInspectorProfile();
       const token = crypto.randomUUID();
-      await invoke('save_session_approval_info', {
-        projectId: activePackagingProject.project_id,
-        sessionId: activeSession.session_id,
-        approvalToken: token,
-        approvalEmail: email,
-        inspectorName: inspectorProfile?.name || null,
-        inspectorEmail: inspectorProfile?.email || null
-      });
 
       // 1. Fetch the PDF dynamically from the web service.
       let reportPdfBase64 = '';
@@ -249,6 +243,18 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
           throw new Error(`Both direct SMTP and web service dispatch failed: ${fallbackResponse.statusText}`);
         }
       }
+
+      // Dispatch succeeded — now it's safe to persist the token and reset the approval
+      // chain, which is what flips the UI into "awaiting approval".
+      await invoke('save_session_approval_info', {
+        projectId: activePackagingProject.project_id,
+        sessionId: activeSession.session_id,
+        approvalToken: token,
+        approvalEmail: email,
+        inspectorName: inspectorProfile?.name || null,
+        inspectorEmail: inspectorProfile?.email || null
+      });
+
       setIsSendEmailOpen(false);
       await showProfessionalAlert(
         'Email Dispatched',
@@ -258,7 +264,25 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
       await onRefreshProject();
     } catch (e: any) {
       console.error('Failed to send email:', e);
-      await showProfessionalAlert('Send Failed', `Could not dispatch email: ${e.message || e}`, 'danger');
+      const rawMessage = String(e?.message || e || '');
+      // Both failure paths can raise a plain connectivity error: the browser fetch (PDF
+      // fetch, and the web-service fallback) throws a bare TypeError with no HTTP status
+      // when it can't reach the host at all (DNS/firewall/VPN/CORS/server down), and the
+      // Rust SMTP relay surfaces its own connect/timeout errors as a plain string. Neither
+      // looks like "Both direct SMTP and web service dispatch failed: <statusText>", which
+      // only fires once a real HTTP response came back — so that phrasing marks a genuine
+      // connection failure rather than a server-side rejection.
+      const isConnectionIssue = e instanceof TypeError
+        || /failed to fetch|networkerror|load failed|network error|err_|connection refused|connect error|timed out|timeout|could not connect|dns|os error|unreachable/i.test(rawMessage);
+      if (isConnectionIssue) {
+        await showProfessionalAlert(
+          'Connection Failed',
+          `Could not reach the mail server or web service. This looks like a network problem — check your internet connection or VPN and try again.\n\nDetails: ${rawMessage}`,
+          'danger'
+        );
+      } else {
+        await showProfessionalAlert('Send Failed', `Could not dispatch email: ${rawMessage}`, 'danger');
+      }
     } finally {
       setIsSendingEmail(false);
     }
