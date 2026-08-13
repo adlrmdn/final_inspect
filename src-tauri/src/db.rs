@@ -3001,17 +3001,30 @@ fn fetch_and_store_lines(
 
     let records = resp["value"].as_array().ok_or_else(|| format!("Invalid response format for JobTransactionLinesDetails: {:?}", resp))?;
 
+    // Guard: an empty response from D365 (transient OData hiccup, wrong filter, etc.) must not
+    // wipe out previously-synced size rows. Only proceed to delete/replace when we actually have
+    // fresh data to replace them with.
+    if records.is_empty() {
+        println!("Warning: JobTransactionLinesDetails returned no lines for job {} (session {:?}); keeping existing local rows", target_job_id, session_id);
+        return Ok(());
+    }
+
+    // Run the delete + reinsert as a single transaction so a failure partway through insertion
+    // rolls back the delete instead of leaving previously-synced size rows gone with nothing to
+    // replace them.
+    let mut tx = qms_client.transaction().map_err(|e| format!("Failed to start transaction: {}", e))?;
+
     // 1. Delete existing report lines for this project and session to prevent duplicate/stale records
     if let Some(sess_id) = session_id {
-        let _ = qms_client.execute(
+        tx.execute(
             "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
             &[&project_id, &sess_id]
-        );
+        ).map_err(|e| format!("Failed to delete existing report rows: {}", e))?;
     } else {
-        let _ = qms_client.execute(
+        tx.execute(
             "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL",
             &[&project_id]
-        );
+        ).map_err(|e| format!("Failed to delete existing report rows: {}", e))?;
     }
 
     // 2. Filter duplicate size lines from D365, keeping only the latest record for each size
@@ -3059,7 +3072,7 @@ fn fetch_and_store_lines(
 
             let report_id = format!("{}_{}_{}", project_id, target_job_id, size_key);
 
-            qms_client.execute(
+            tx.execute(
                 "INSERT INTO packaging_project_reports (
                     report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
                     item_id, size_val, global_display_order, reject_produksi, reject_finishing,
@@ -3105,6 +3118,8 @@ fn fetch_and_store_lines(
             ).map_err(|e| format!("Failed to insert packaging project report row: {}", e))?;
         }
     }
+
+    tx.commit().map_err(|e| format!("Failed to commit report row transaction: {}", e))?;
 
     Ok(())
 }
