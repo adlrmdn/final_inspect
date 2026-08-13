@@ -3203,8 +3203,15 @@ pub fn get_packaging_project_reports(project_id: &str, session_id: Option<&str>)
 pub fn save_packaging_project_reports(reports: Vec<PackagingProjectReport>) -> Result<(), String> {
     let mut client = get_connection_qms()?;
 
+    // Run the whole batch as a single transaction: a size-row batch (e.g. one per
+    // inspection session) must be all-or-nothing. Previously each row was executed
+    // individually and a failure partway through the loop aborted the function via
+    // `?`, leaving earlier rows committed and the rest of the batch silently
+    // missing (e.g. a dropped size line) with no rollback.
+    let mut tx = client.transaction().map_err(|e| format!("Failed to start transaction: {}", e))?;
+
     for report in reports {
-        client.execute(
+        tx.execute(
             "INSERT INTO packaging_project_reports (
                 report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
                 item_id, size_val, global_display_order, reject_produksi, reject_finishing,
@@ -3214,7 +3221,7 @@ pub fn save_packaging_project_reports(reports: Vec<PackagingProjectReport>) -> R
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, NOW())
              ON CONFLICT (report_id)
-             DO UPDATE SET 
+             DO UPDATE SET
                 session_id = $2, project_id = $3, data_area_id = $4, line_no = $5, job_transaction_id = $6,
                 item_id = $7, size_val = $8, global_display_order = $9, reject_produksi = $10, reject_finishing = $11,
                 reject_embro = $12, qty_order = $13, total_qty_sample = $14, barang_hilang = $15, reject_cutting = $16,
@@ -3251,6 +3258,8 @@ pub fn save_packaging_project_reports(reports: Vec<PackagingProjectReport>) -> R
             ]
         ).map_err(|e| format!("Failed to save packaging project report row: {}", e))?;
     }
+
+    tx.commit().map_err(|e| format!("Failed to commit packaging project report batch: {}", e))?;
 
     Ok(())
 }
