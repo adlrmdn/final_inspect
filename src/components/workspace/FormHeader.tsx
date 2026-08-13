@@ -203,7 +203,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
         <span style={{ fontSize: '0.62rem', fontWeight: 800, color: 'var(--text-muted)', opacity: 0.75, fontFamily: 'monospace', lineHeight: '1' }}>
-          v1.2.3
+          v1.2.5
         </span>
         <div className="hud-window-controls hud-window-controls-bar" style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
           {onShowGuidelines && (

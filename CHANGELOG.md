@@ -2,6 +2,11 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.2.5]
+
+- Fix: D365 line sync (`fetch_and_store_lines`) no longer wipes out previously-synced size rows (e.g. size S) when Dynamics returns an empty or partial `JobTransactionLinesDetails` response. The delete+reinsert is now skipped on an empty response and wrapped in a transaction so a mid-loop insert failure can't leave rows deleted with nothing reinserted.
+- Fix: the "select style" picker now refetches active PLM activities whenever it's opened, instead of only once at app launch — projects that become eligible (e.g. `PLMActivityStatus` flips to `Started`) after the app was loaded now show up without requiring a reload.
+
 ## [1.2.4]
 
 - Fix: the "Send" step of the Verify email flow no longer marks a session as "waiting approval" when the email actually failed to send. The approval token/chain is now only persisted after the email dispatch (direct SMTP or web-service fallback) succeeds.
