@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { DatabaseService } from '../services/database_service';
 import { QCInspectionTemplate } from '../models/qc_template';
@@ -1033,17 +1033,27 @@ export default function FormView({
 
 
   // Load active PLM activities from backend (VSM Central source of truth)
-  useEffect(() => {
-    const fetchPlmActivities = async () => {
-      try {
-        const list = await PackagingService.getInstance().invokeSafe<any[]>('pg_get_active_plm_activities', {}, []);
-        setActiveActivities(list || []);
-      } catch (e) {
-        console.error('Failed to fetch active PLM activities:', e);
-      }
-    };
-    fetchPlmActivities();
+  const fetchPlmActivities = useCallback(async () => {
+    try {
+      const list = await PackagingService.getInstance().invokeSafe<any[]>('pg_get_active_plm_activities', {}, []);
+      setActiveActivities(list || []);
+    } catch (e) {
+      console.error('Failed to fetch active PLM activities:', e);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchPlmActivities();
+  }, [fetchPlmActivities]);
+
+  // Re-fetch whenever the style picker is opened, so activities that became
+  // eligible (e.g. PLMActivityStatus just flipped to 'Started') after the app
+  // was loaded show up without requiring a full app reload.
+  useEffect(() => {
+    if (isDropdownOpen) {
+      fetchPlmActivities();
+    }
+  }, [isDropdownOpen, fetchPlmActivities]);
 
   useEffect(() => {
     if (activeActivities && activeActivities.length > 0) {
