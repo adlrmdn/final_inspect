@@ -455,30 +455,31 @@ export default function FormView({
     const interval = setInterval(async () => {
       if (!navigator.onLine) return;
       try {
-        const details = await PackagingService.getInstance().invokeSafe<any>(
-          'get_packaging_project_details',
-          { projectId: activePackagingProject.project_id },
+        // Lightweight poll target — just the three signature fields for this one session, not
+        // the full project (every session, every defect image's base64 blob). Patch the result
+        // directly onto existing state instead of replacing it wholesale.
+        const status = await PackagingService.getInstance().invokeSafe<any>(
+          'get_session_approval_status',
+          { projectId: activePackagingProject.project_id, sessionId: activeSession.session_id },
           null
         );
-        if (details && details.sessions) {
-          const currentSessionInDb = details.sessions.find(
-            (s: any) => s.session_id === activeSession.session_id
-          );
-          if (currentSessionInDb && (
-            currentSessionInDb.approval_signature?.includes('Digitally Signed') ||
-            currentSessionInDb.approval_status === 'approved' ||
-            currentSessionInDb.approval_status === 'rejected'
-          )) {
-            setActivePackagingProject((cur: any) => cur && cur.project_id === details.project_id ? details : cur);
-            setActiveSession((curSes: any) => curSes && curSes.session_id === currentSessionInDb.session_id ? currentSessionInDb : curSes);
-            clearInterval(interval);
-          }
+        if (status && (
+          status.approval_signature?.includes('Digitally Signed') ||
+          status.approval_status === 'approved' ||
+          status.approval_status === 'rejected'
+        )) {
+          setActiveSession((curSes: any) => curSes && curSes.session_id === status.session_id ? { ...curSes, ...status } : curSes);
+          setActivePackagingProject((cur: any) => {
+            if (!cur || !cur.sessions) return cur;
+            return { ...cur, sessions: cur.sessions.map((s: any) => s.session_id === status.session_id ? { ...s, ...status } : s) };
+          });
+          clearInterval(interval);
         }
       } catch (err) {
         console.warn('Polling for signature failed:', err);
       }
     }, 8000);
-    
+
     return () => clearInterval(interval);
   }, [activePackagingProject?.project_id, activeSession?.session_id, activeSession?.approval_signature]);
 
@@ -493,20 +494,18 @@ export default function FormView({
     const interval = setInterval(async () => {
       if (!navigator.onLine) return;
       try {
-        const details = await PackagingService.getInstance().invokeSafe<any>(
-          'get_packaging_project_details',
-          { projectId: activePackagingProject.project_id },
+        const status = await PackagingService.getInstance().invokeSafe<any>(
+          'get_session_approval_status',
+          { projectId: activePackagingProject.project_id, sessionId: activeSession.session_id },
           null
         );
-        if (details && details.sessions) {
-          const currentSessionInDb = details.sessions.find(
-            (s: any) => s.session_id === activeSession.session_id
-          );
-          if (currentSessionInDb?.ho_approval_signature) {
-            setActivePackagingProject((cur: any) => cur && cur.project_id === details.project_id ? details : cur);
-            setActiveSession((curSes: any) => curSes && curSes.session_id === currentSessionInDb.session_id ? currentSessionInDb : curSes);
-            clearInterval(interval);
-          }
+        if (status?.ho_approval_signature) {
+          setActiveSession((curSes: any) => curSes && curSes.session_id === status.session_id ? { ...curSes, ...status } : curSes);
+          setActivePackagingProject((cur: any) => {
+            if (!cur || !cur.sessions) return cur;
+            return { ...cur, sessions: cur.sessions.map((s: any) => s.session_id === status.session_id ? { ...s, ...status } : s) };
+          });
+          clearInterval(interval);
         }
       } catch (err) {
         console.warn('Stage 2 polling failed:', err);
@@ -710,25 +709,46 @@ export default function FormView({
     }
   };
 
-  // Auto-remove stale projects: completed+synced dormant >3 days, draft dormant >30 days
+  // Forget stale projects from this device's own "downloaded" list: completed+dormant >3 days,
+  // downloaded-but-dormant >30 days.
+  //
+  // This used to call removeProjectById, which soft-deletes the shared QMS record
+  // (status -> 'removed'/'removed_completed') — a server-side mutation visible to every device,
+  // triggered by whichever single console instance happened to be open and matched the age
+  // threshold, for ANY project company-wide (packagingProjects is the full unfiltered summary
+  // list, not scoped to this device). That meant one idle machine could silently archive another
+  // inspector's still-unfinished report out from under them.
+  //
+  // The app is online-first: the shared project list is always re-fetched fresh from QMS, so
+  // deleting the server record was never actually necessary to keep any single device light —
+  // it was solving a local-storage problem with a shared-database mutation. Now that the local
+  // cache itself only retains full detail for this device's own downloads (see
+  // packaging_service.ts saveStoredProjects), the only thing left to prune here is this
+  // device's own stale entries in its own download list — a purely local, non-destructive
+  // "forget", not a delete. Other devices/inspectors and the shared record are untouched.
   React.useEffect(() => {
-    if (packagingProjects.length === 0) return;
+    if (deviceProjectIds.length === 0) return;
     const THREE_DAYS = 3 * 86_400_000;
     const THIRTY_DAYS = 30 * 86_400_000;
     const now = Date.now();
-    const stale = packagingProjects.filter((p: any) => {
-      if (!p.updated_at) return false;
-      const age = now - new Date(p.updated_at).getTime();
-      return p.status === 'completed' ? age > THREE_DAYS : age > THIRTY_DAYS;
-    });
-    if (stale.length === 0) return;
-    (async () => {
-      for (const p of stale) {
-        try { await removeProjectById(p.project_id); } catch { /* non-fatal */ }
-      }
-      await fetchPackagingProjects(true);
-    })();
-  }, [packagingProjects.length]);
+    const staleIds = packagingProjects
+      .filter((p: any) => deviceProjectIds.includes(p.project_id))
+      .filter((p: any) => {
+        if (!p.updated_at) return false;
+        const age = now - new Date(p.updated_at).getTime();
+        return p.status === 'completed' ? age > THREE_DAYS : age > THIRTY_DAYS;
+      })
+      .map((p: any) => p.project_id);
+    if (staleIds.length === 0) return;
+
+    const nextDeviceProjects = deviceProjectIds.filter(id => !staleIds.includes(id));
+    localStorage.setItem('packaging_device_downloaded_projects', JSON.stringify(nextDeviceProjects));
+    setDeviceProjectIds(nextDeviceProjects);
+
+    // Re-prune the disk cache now so the stale projects' full detail (sessions/defect images)
+    // is dropped immediately rather than waiting for the next incidental cache write.
+    PackagingService.getInstance().saveStoredProjects(PackagingService.getInstance().getStoredProjects());
+  }, [packagingProjects.length, deviceProjectIds]);
 
   // handleCompleteProject / handleRevertProject removed: completion is now driven
   // by the portal's Director approval (stage 3) — the console no longer completes,

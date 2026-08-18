@@ -114,6 +114,21 @@ async fn write_offline_projects_cache(app: tauri::AppHandle, data: Value) -> Res
 }
 
 #[tauri::command]
+async fn read_offline_project_detail(app: tauri::AppHandle, project_id: String) -> Result<Value, String> {
+    db::read_offline_project_detail(app, project_id)
+}
+
+#[tauri::command]
+async fn read_offline_operations_queue(app: tauri::AppHandle) -> Result<Value, String> {
+    db::read_offline_operations_queue(app)
+}
+
+#[tauri::command]
+async fn write_offline_operations_queue(app: tauri::AppHandle, data: Value) -> Result<(), String> {
+    db::write_offline_operations_queue(app, data)
+}
+
+#[tauri::command]
 async fn get_packaging_projects_summary() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
         db::get_packaging_projects_summary()
@@ -126,6 +141,15 @@ async fn get_packaging_projects_summary() -> Result<Value, String> {
 async fn get_packaging_project_details(project_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         db::get_packaging_project_details(&project_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_session_approval_status(project_id: String, session_id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        db::get_session_approval_status(&project_id, &session_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -487,6 +511,7 @@ pub fn run() {
             update_packaging_project_deductions,
             save_packaging_project,
             trigger_partial_process_sync,
+            get_session_approval_status,
             save_packaging_session,
             save_packaging_defect_image,
             delete_packaging_defect_image,
@@ -504,6 +529,9 @@ pub fn run() {
 
             read_offline_projects_cache,
             write_offline_projects_cache,
+            read_offline_project_detail,
+            read_offline_operations_queue,
+            write_offline_operations_queue,
             get_packaging_projects_summary,
             get_packaging_project_details,
             save_session_approval_info,

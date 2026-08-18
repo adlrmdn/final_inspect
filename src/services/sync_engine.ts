@@ -41,47 +41,23 @@ export class SyncEngine {
   public registerListener(listener: SyncListener): () => void {
     this.listeners.add(listener);
     // Initial call
-    listener(this.getPendingCount(), this.isSyncing);
+    this.getPendingCount().then(count => listener(count, this.isSyncing));
     return () => {
       this.listeners.delete(listener);
     };
   }
 
   private notifyListeners(): void {
-    const count = this.getPendingCount();
-    this.listeners.forEach(listener => listener(count, this.isSyncing));
+    this.getPendingCount().then(count => {
+      this.listeners.forEach(listener => listener(count, this.isSyncing));
+    });
   }
 
-  private getUnsyncedPackagingCount(): number {
-    if (typeof window === 'undefined') return 0;
-    
-    let count = 0;
-
-    // Count unsynced items from PackagingService memory cache (backed by local JSON cache)
-    const projects = PackagingService.getInstance().getStoredProjects();
-    for (const p of projects) {
-      if (p.synced === false) count++;
-      if (p.sessions) {
-        for (const s of p.sessions) {
-          if (s.synced === false) count++;
-        }
-      }
-      if (p.defect_images) {
-        for (const img of p.defect_images) {
-          if (img.synced === false) count++;
-        }
-      }
-    }
-
-    // Count pending removals
-    const removals = PackagingService.getInstance().getStoredRemovals();
-    count += removals.length;
-
-    return count;
-  }
-
-  public getPendingCount(): number {
-    return this.dbService.getPendingReports().length + this.getUnsyncedPackagingCount();
+  // The pending-operations queue lives on disk (see PackagingService), so counting it is async —
+  // unlike the old in-memory tree walk this replaces.
+  public async getPendingCount(): Promise<number> {
+    const queue = typeof window === 'undefined' ? [] : await PackagingService.getInstance().getPendingOperations();
+    return this.dbService.getPendingReports().length + queue.length;
   }
 
   public getOnlineStatus(): boolean {
@@ -92,7 +68,7 @@ export class SyncEngine {
    * Triggers an automatic sync if the client is online and reports are pending.
    */
   public async autoSync(): Promise<void> {
-    if (this.isOnline && this.getPendingCount() > 0) {
+    if (this.isOnline && (await this.getPendingCount()) > 0) {
       await this.synchronize();
     }
   }
@@ -131,87 +107,24 @@ export class SyncEngine {
         this.notifyListeners();
       }
 
-      // 2. Sync offline packaging projects & sessions
-      const projects = [...PackagingService.getInstance().getStoredProjects()];
-
-      for (const p of projects) {
-        let dirty = false;
-
-        // Sync project header
-        if (p.synced === false) {
-          try {
-            const { base_lines, sessions, defect_images, synced, ...rest } = p;
-            const sanitizedProject = PackagingService.getInstance().sanitizeProject(rest);
-            await invoke('save_packaging_project', { project: sanitizedProject });
-            p.synced = true;
-            dirty = true;
-            this.notifyListeners();
-          } catch (e) {
-            console.error(`Failed to sync project ${p.project_id}:`, e);
-          }
+      // 2. Drain the pending-operations queue: the precise record of every packaging write made
+      // while offline (project header saves, session saves, report lines, defect images,
+      // deletions — see PackagingService.enqueueOperation), replayed in the order they happened.
+      // Each entry already carries its exact original, sanitized invoke() args, so this is a
+      // faithful replay rather than a reconstruction from whatever the cache looks like now.
+      // Draining goes through PackagingService's own lock so a write that fails and gets queued
+      // mid-drain can never be clobbered by the drain's own final write-back.
+      await PackagingService.getInstance().drainPendingOperations(async (op) => {
+        await invoke(op.cmd, op.args);
+        if (op.cmd === 'save_packaging_project') {
+          // Best-effort: flip the summary-level synced flag if this project happens to be
+          // resident in memory right now, purely for the chat assistant's status label.
+          const pid = op.args?.project?.project_id;
+          const cached = PackagingService.getInstance().getStoredProjects().find((p: any) => p.project_id === pid);
+          if (cached) cached.synced = true;
         }
-
-        // Sync sessions
-        if (p.sessions) {
-          for (const s of p.sessions) {
-            if (s.synced === false) {
-              try {
-                const { report_lines, synced, ...rest } = s;
-                const sanitizedSession = PackagingService.getInstance().sanitizeSession(rest);
-                await invoke('save_packaging_session', { session: sanitizedSession });
-                if (report_lines && report_lines.length > 0) {
-                  const sanitizedReports = report_lines.map((l: any) => PackagingService.getInstance().sanitizeReportLine(l));
-                  await invoke('save_packaging_project_reports', { reports: sanitizedReports });
-                }
-                s.synced = true;
-                dirty = true;
-                this.notifyListeners();
-              } catch (e) {
-                console.error(`Failed to sync session ${s.session_id}:`, e);
-              }
-            }
-          }
-        }
-
-        // Sync defect images
-        if (p.defect_images) {
-          for (const img of p.defect_images) {
-            if (img.synced === false) {
-              try {
-                const { synced, ...rest } = img;
-                const sanitizedImage = PackagingService.getInstance().sanitizeDefectImage(rest);
-                await invoke('save_packaging_defect_image', { image: sanitizedImage });
-                img.synced = true;
-                dirty = true;
-                this.notifyListeners();
-              } catch (e) {
-                console.error(`Failed to sync defect image ${img.image_id}:`, e);
-              }
-            }
-          }
-        }
-
-        // Persist sync flags once per project, not after every item
-        if (dirty) {
-          await PackagingService.getInstance().saveStoredProjects(projects);
-        }
-      }
-
-      // 3. Sync offline packaging project removals
-      const removals = PackagingService.getInstance().getStoredRemovals();
-      if (removals.length > 0) {
-        const remainingRemovals: string[] = [];
-        for (const pid of removals) {
-          try {
-            await invoke('delete_packaging_project', { projectId: pid });
-          } catch (e) {
-            console.error(`Failed to sync offline deletion for project ${pid}:`, e);
-            remainingRemovals.push(pid);
-          }
-        }
-        PackagingService.getInstance().saveStoredRemovals(remainingRemovals);
         this.notifyListeners();
-      }
+      });
     } finally {
       this.isSyncing = false;
       this.notifyListeners();

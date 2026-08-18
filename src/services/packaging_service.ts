@@ -1,8 +1,27 @@
 import { invoke } from '@tauri-apps/api/core';
 
+// Heavy fields only meaningful for a project that's actually open right now: base_lines/
+// base_report/defect_images (defect photos average ~230KB each as base64 and routinely add up to
+// hundreds of MB across a company's full project history), plus each session's report_lines and
+// deduction_lines. The top-level `sessions` array itself is NOT in this list — its lightweight
+// summary shape (cycle_number/status/result/signatures, no line items) is what get_packaging_
+// projects_summary already returns for every project cheaply, and features like the AI
+// assistant's project list rely on it being present even for projects that aren't open.
+const TOP_LEVEL_HEAVY_KEYS = ['base_lines', 'base_report', 'defect_images'] as const;
+const SESSION_HEAVY_KEYS = ['report_lines', 'deduction_lines'] as const;
+
+// Commands whose failures (while offline) represent a real write still owed to the server —
+// these get recorded in the pending-operations queue so SyncEngine can replay them later.
+const WRITE_COMMANDS = new Set([
+  'save_packaging_project',
+  'save_packaging_session',
+  'save_packaging_project_reports',
+  'save_packaging_defect_image',
+  'delete_packaging_project',
+]);
+
 export class PackagingService {
   private static instance: PackagingService | null = null;
-  private STORAGE_KEY_REMOVALS = 'packaging_offline_removals';
   private cachedProjects: any[] = [];
   // Only this project's verified_doc (its multi-MB base64 PDF) is allowed to
   // survive a cache write — see saveStoredProjects(). Every other cached
@@ -192,10 +211,38 @@ export class PackagingService {
 
   // --- DISK CACHE GETTERS/SETTERS ---
 
+  private stripDetail(p: any): any {
+    if (!p) return p;
+    const rest = { ...p };
+    if (Object.prototype.hasOwnProperty.call(rest, 'verified_doc')) delete rest.verified_doc;
+    for (const key of TOP_LEVEL_HEAVY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(rest, key)) delete rest[key];
+    }
+    // Keep the sessions array itself (cheap, needed for project-list/status features) but drop
+    // each session's heavy nested line-item arrays.
+    if (Array.isArray(rest.sessions)) {
+      rest.sessions = rest.sessions.map((s: any) => {
+        if (!s) return s;
+        const hasHeavyKey = SESSION_HEAVY_KEYS.some(key => Object.prototype.hasOwnProperty.call(s, key));
+        if (!hasHeavyKey) return s;
+        const sessionRest = { ...s };
+        for (const key of SESSION_HEAVY_KEYS) delete sessionRest[key];
+        return sessionRest;
+      });
+    }
+    return rest;
+  }
+
   public async loadCacheFromDisk(): Promise<any[]> {
     try {
       const stored = await invoke<any[]>('read_offline_projects_cache');
-      this.cachedProjects = stored || [];
+      // Nothing is "active" yet at launch, and a user only ever has one project open at a time —
+      // so nothing needs full detail resident yet. Pending offline writes are tracked separately
+      // in the operations queue (see getPendingOperations), not by keeping whole project trees
+      // around, so this stays a plain strip regardless of sync state. Without this, every project
+      // this device has ever downloaded would get its full sessions + base64 defect images loaded
+      // into memory on every single app launch, whether or not it's still relevant.
+      this.cachedProjects = (stored || []).map((p: any) => this.stripDetail(p));
       return this.cachedProjects;
     } catch (e) {
       console.error('Failed to load cache from disk:', e);
@@ -207,37 +254,127 @@ export class PackagingService {
     return this.cachedProjects;
   }
 
-  public async saveStoredProjects(projects: any[]): Promise<void> {
-    // Strip verified_doc (the multi-MB base64 PDF) from every project except
-    // whichever one is currently open. Without this, the offline cache would
-    // accumulate a full PDF for every project ever opened and re-load all of
-    // them into memory on every app launch — the PDF should only ever be
-    // resident for the project you actually have open right now.
-    const pruned = projects.map((p: any) => {
-      if (p && p.project_id !== this.activeProjectId && Object.prototype.hasOwnProperty.call(p, 'verified_doc')) {
-        const { verified_doc, ...rest } = p;
-        return rest;
-      }
-      return p;
-    });
-    this.cachedProjects = pruned;
+  // Load one project's full offline record on demand from disk — used when reopening a
+  // previously-downloaded, fully-synced project while offline, since its in-memory copy is
+  // intentionally summary-only (see loadCacheFromDisk/saveStoredProjects).
+  public async loadProjectDetailFromDisk(projectId: string): Promise<any | null> {
     try {
-      await invoke('write_offline_projects_cache', { data: pruned });
+      const detail = await invoke<any>('read_offline_project_detail', { projectId });
+      return detail || null;
     } catch (e) {
-      console.error('Failed to write projects cache to disk:', e);
+      console.error('Failed to read project detail from disk:', e);
+      return null;
     }
   }
 
-  public getStoredRemovals(): string[] {
-    if (typeof window === 'undefined') return [];
-    const stored = localStorage.getItem(this.STORAGE_KEY_REMOVALS);
-    return stored ? JSON.parse(stored) : [];
+  public async saveStoredProjects(projects: any[]): Promise<void> {
+    // Disk keeps full detail (sessions/report lines/defect images/verified_doc) for the active
+    // project and anything this device actually downloaded for offline work — that's what makes
+    // offline reopen possible at all. Everything else (projects merely summary-listed from
+    // get_packaging_projects_summary, or briefly viewed once) is pruned to lightweight summary
+    // fields before it ever touches disk.
+    let deviceProjectIds: string[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        deviceProjectIds = JSON.parse(localStorage.getItem('packaging_device_downloaded_projects') || '[]');
+      } catch { /* corrupt/missing — treat as empty */ }
+    }
+
+    const diskPruned = projects.map((p: any) => {
+      if (!p) return p;
+      const keepOnDisk = p.project_id === this.activeProjectId || deviceProjectIds.includes(p.project_id);
+      return keepOnDisk ? p : this.stripDetail(p);
+    });
+    try {
+      await invoke('write_offline_projects_cache', { data: diskPruned });
+    } catch (e) {
+      console.error('Failed to write projects cache to disk:', e);
+    }
+
+    // In-memory residency is stricter than the disk copy: ONLY the currently open project stays
+    // full-detail resident — a user only ever has one project open at a time, so RAM is bounded
+    // to exactly that, regardless of how many other projects this device has downloaded or how
+    // many of them have pending offline edits. Pending edits themselves are never lost: they live
+    // in the operations queue (see getPendingOperations), a compact list of the actual writes
+    // still owed to the server, decoupled from these bulky project trees. A project that's fully
+    // synced or not currently open has no reason to keep its images pinned in RAM — it'll be
+    // re-hydrated from disk (or the server) if reopened.
+    this.cachedProjects = diskPruned.map((p: any) => {
+      if (!p || p.project_id === this.activeProjectId) return p;
+      return this.stripDetail(p);
+    });
   }
 
-  public saveStoredRemovals(removals: string[]): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(this.STORAGE_KEY_REMOVALS, JSON.stringify(removals));
+  // --- OFFLINE OPERATIONS QUEUE ---
+  // The authoritative record of writes still owed to the server. Populated by invokeSafe()
+  // whenever a mutating command fails while offline; drained in order by SyncEngine once back
+  // online. Kept as its own small file (not derived from the project cache) specifically so
+  // tracking "what's unsynced" never requires keeping full project trees resident in memory.
+
+  public async getPendingOperations(): Promise<Array<{ id: string; cmd: string; args: Record<string, any>; queuedAt: string }>> {
+    try {
+      const queue = await invoke<any[]>('read_offline_operations_queue');
+      return queue || [];
+    } catch (e) {
+      console.error('Failed to read pending operations queue:', e);
+      return [];
+    }
   }
+
+  public async savePendingOperations(queue: Array<{ id: string; cmd: string; args: Record<string, any>; queuedAt: string }>): Promise<void> {
+    try {
+      await invoke('write_offline_operations_queue', { data: queue });
+    } catch (e) {
+      console.error('Failed to write pending operations queue:', e);
+    }
+  }
+
+  // Serializes read-modify-write access to the queue file. Several offline writes can be
+  // in-flight at once — e.g. handleUpdateSavedDefect fires save_packaging_defect_image without
+  // awaiting it — so two enqueueOperation calls (or an enqueue racing a drain) could otherwise
+  // both read the queue before either writes, and the second write silently clobbers the first,
+  // dropping a queued edit. Chaining every queue mutation through this one promise makes them
+  // run strictly one at a time regardless of call order.
+  private queueLock: Promise<void> = Promise.resolve();
+
+  private withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queueLock.then(fn, fn);
+    this.queueLock = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  public enqueueOperation(cmd: string, args: Record<string, any>): Promise<void> {
+    return this.withQueueLock(async () => {
+      const queue = await this.getPendingOperations();
+      queue.push({
+        id: `${cmd}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        cmd,
+        args,
+        queuedAt: new Date().toISOString(),
+      });
+      await this.savePendingOperations(queue);
+    });
+  }
+
+  // Drains the queue under the same lock as enqueueOperation, so nothing enqueued mid-drain can
+  // be overwritten by the drain's own final write. `replay` is called once per queued op, in
+  // order; ops it throws on stay queued for the next sync attempt, everything else is removed.
+  public drainPendingOperations(replay: (op: { id: string; cmd: string; args: Record<string, any>; queuedAt: string }) => Promise<void>): Promise<void> {
+    return this.withQueueLock(async () => {
+      const queue = await this.getPendingOperations();
+      const remaining: typeof queue = [];
+      for (const op of queue) {
+        try {
+          await replay(op);
+        } catch (e) {
+          console.error(`Failed to sync queued operation ${op.cmd} (${op.id}):`, e);
+          remaining.push(op);
+        }
+      }
+      await this.savePendingOperations(remaining);
+    });
+  }
+
 
   // --- CACHE MUTATIONS ---
 
@@ -323,21 +460,14 @@ export class PackagingService {
     if (cmd === 'delete_packaging_project') {
       const projects = this.getStoredProjects();
       const pid = args.project_id || args.projectId;
-      const targetProj = projects.find(item => item.project_id === pid);
       const filtered = projects.filter(item => item.project_id !== pid);
       await this.saveStoredProjects(filtered);
-      
+
       // Clean up cached initial size report variations to free up storage space
       localStorage.removeItem(`packaging_initial_reports_${pid}`);
 
-      // If the deleted project was already synced to the server and we are offline, track it for future sync
-      if (!synced && targetProj && targetProj.synced !== false) {
-        const removals = this.getStoredRemovals();
-        if (!removals.includes(pid)) {
-          removals.push(pid);
-          this.saveStoredRemovals(removals);
-        }
-      }
+      // Whether this needs to be replayed against the server while offline is tracked by the
+      // pending-operations queue (see invokeSafe's catch block), not here.
     }
   }
 
@@ -414,7 +544,12 @@ export class PackagingService {
 
       if (cmd === 'get_packaging_project_details') {
         const pid = sanitizedArgs.project_id || sanitizedArgs.projectId;
-        const localDetails = this.getStoredProjects().find(p => p.project_id === pid);
+        // The in-memory copy may be summary-only (see loadCacheFromDisk/saveStoredProjects) if
+        // this project is fully synced and isn't the one currently open — re-hydrate its full
+        // detail straight from disk rather than returning a partial object.
+        const diskDetails = await this.loadProjectDetailFromDisk(pid);
+        const localDetails = diskDetails || this.getStoredProjects().find(p => p.project_id === pid);
+        if (localDetails) this.activeProjectId = pid;
         return (localDetails || fallback) as unknown as T;
       }
 
@@ -425,6 +560,12 @@ export class PackagingService {
       }
 
       await this.updateCacheMutation(cmd, sanitizedArgs, false);
+      if (WRITE_COMMANDS.has(cmd)) {
+        // Record the actual write that still needs to reach the server. updateCacheMutation
+        // above already updated the local view cache so the UI reflects the edit immediately —
+        // this queue entry is the separate, compact record SyncEngine drains once back online.
+        await this.enqueueOperation(cmd, sanitizedArgs);
+      }
       return fallback;
     }
   }

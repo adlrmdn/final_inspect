@@ -282,25 +282,61 @@ pub struct PackagingDefectImage {
 
 // PackagingProjectReport struct is defined above
 
-// Connect to VSM Reference Database
-fn get_connection_vsm() -> Result<Client, String> {
+// Connection pooling: every one of the ~40 call sites in this file used to open a brand-new
+// TCP + auth handshake to the remote AWS-hosted Postgres for every single command, even trivial
+// reads — the single biggest latency cost in the app. Each DB now gets one lazily-initialized
+// r2d2 pool (shared, thread-safe, cheap to clone) that hands out already-established connections.
+// PooledConnection<PostgresConnectionManager<NoTls>> derefs to postgres::Client, so every
+// existing call site (`client.query(...)`, `&mut client` passed into helpers expecting
+// `&mut Client`) keeps working unchanged via deref coercion.
+type PgPool = r2d2::Pool<r2d2_postgres::PostgresConnectionManager<NoTls>>;
+type PooledClient = r2d2::PooledConnection<r2d2_postgres::PostgresConnectionManager<NoTls>>;
+
+static VSM_POOL: OnceLock<PgPool> = OnceLock::new();
+static QMS_POOL: OnceLock<PgPool> = OnceLock::new();
+static RPA_POOL: OnceLock<PgPool> = OnceLock::new();
+
+// build_unchecked (not build()) deliberately does NOT test-connect at pool-construction time —
+// this app's offline-first design relies on connection failures surfacing per-call (many callers
+// do `if let Ok(mut client) = get_connection_vsm() { ... }` and treat failure as "we're offline"),
+// so the pool must stay lazy about connecting exactly like the old direct-connect code did.
+fn build_pool(db_url: &str) -> PgPool {
     use std::time::Duration;
     use std::str::FromStr;
-    let mut config = postgres::Config::from_str(VSM_DB_URL)
-        .map_err(|e| format!("Invalid VSM config: {}", e))?;
+    let mut config = postgres::Config::from_str(db_url)
+        .unwrap_or_else(|e| panic!("Invalid hardcoded DB config for {}: {}", db_url, e));
     config.connect_timeout(Duration::from_millis(1500));
-    config.connect(NoTls).map_err(|e| format!("Failed to connect to VSM reference DB: {}", e))
+    let manager = r2d2_postgres::PostgresConnectionManager::new(config, NoTls);
+    r2d2::Pool::builder()
+        // This app's real usage pattern is one Tauri command in flight at a time per pool, with
+        // occasional bursts of 2-3 (e.g. get_active_plm_activities touching both VSM and QMS, or
+        // a couple of fire-and-forget saves overlapping). 4 covers that with headroom. This
+        // matters at fleet scale: unlike the old per-call connect/drop, a pool keeps connections
+        // open between uses — 3 DBs x max_size x every inspector's machine running the console
+        // simultaneously adds up against the server's max_connections, so kept deliberately small.
+        .max_size(4)
+        .connection_timeout(Duration::from_millis(1500))
+        // Recycle idle connections instead of holding them open indefinitely — this app can sit
+        // open for a full shift (or over a weekend) between bursts of activity.
+        .idle_timeout(Some(Duration::from_secs(300)))
+        .max_lifetime(Some(Duration::from_secs(1800)))
+        .build_unchecked(manager)
+}
+
+// Connect to VSM Reference Database
+fn get_connection_vsm() -> Result<PooledClient, String> {
+    VSM_POOL.get_or_init(|| build_pool(VSM_DB_URL))
+        .get()
+        .map_err(|e| format!("Failed to connect to VSM reference DB: {}", e))
 }
 
 // Connect to QMS Workspace Database (with lazy auto-bootstrap database creation)
-fn get_connection_qms() -> Result<Client, String> {
-    use std::time::Duration;
+fn get_connection_qms() -> Result<PooledClient, String> {
     use std::str::FromStr;
-    let mut config = postgres::Config::from_str(QMS_DB_URL)
-        .map_err(|e| format!("Invalid QMS config: {}", e))?;
-    config.connect_timeout(Duration::from_millis(1500));
+    use std::time::Duration;
+    let pool = QMS_POOL.get_or_init(|| build_pool(QMS_DB_URL));
 
-    match config.connect(NoTls) {
+    match pool.get() {
         Ok(c) => Ok(c),
         Err(e) => {
             let err_str = e.to_string();
@@ -312,8 +348,8 @@ fn get_connection_qms() -> Result<Client, String> {
                 match root_config.connect(NoTls) {
                     Ok(mut root_client) => {
                         let _ = root_client.execute("CREATE DATABASE qms", &[]);
-                        // Re-attempt connecting to qms DB
-                        config.connect(NoTls).map_err(|e2| format!("QMS database created, but failed to connect: {}", e2))
+                        // Re-attempt via the pool now that the DB exists
+                        pool.get().map_err(|e2| format!("QMS database created, but failed to connect: {}", e2))
                     }
                     Err(root_err) => Err(format!("QMS database does not exist and failed to connect to master postgres to create it: {}", root_err))
                 }
@@ -325,14 +361,12 @@ fn get_connection_qms() -> Result<Client, String> {
 }
 
 // Connect to RPA Database (with lazy auto-bootstrap database creation)
-fn get_connection_rpa() -> Result<Client, String> {
-    use std::time::Duration;
+fn get_connection_rpa() -> Result<PooledClient, String> {
     use std::str::FromStr;
-    let mut config = postgres::Config::from_str(RPA_DB_URL)
-        .map_err(|e| format!("Invalid RPA config: {}", e))?;
-    config.connect_timeout(Duration::from_millis(1500));
+    use std::time::Duration;
+    let pool = RPA_POOL.get_or_init(|| build_pool(RPA_DB_URL));
 
-    match config.connect(NoTls) {
+    match pool.get() {
         Ok(c) => Ok(c),
         Err(e) => {
             let err_str = e.to_string();
@@ -344,8 +378,8 @@ fn get_connection_rpa() -> Result<Client, String> {
                 match root_config.connect(NoTls) {
                     Ok(mut root_client) => {
                         let _ = root_client.execute("CREATE DATABASE rpa", &[]);
-                        // Re-attempt connecting to rpa DB
-                        config.connect(NoTls).map_err(|e2| format!("RPA database created, but failed to connect: {}", e2))
+                        // Re-attempt via the pool now that the DB exists
+                        pool.get().map_err(|e2| format!("RPA database created, but failed to connect: {}", e2))
                     }
                     Err(root_err) => Err(format!("RPA database does not exist and failed to connect to master postgres to create it: {}", root_err))
                 }
@@ -830,7 +864,23 @@ pub fn get_reports() -> Result<Vec<QcReport>, String> {
 // Query running and non-shadowed styles directly from the VSM database
 pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
     let mut client = get_connection_vsm()?;
-    
+
+    // Exception: a PLM activity that VSM has shadowed as finished-in-production must stay
+    // reachable in the picker if its QC report was never actually completed (report not yet
+    // submitted for signature, or it got soft/stale-removed before completion). Otherwise the
+    // moment the factory floor finishes, the in-flight inspection becomes permanently
+    // unopenable — nobody can find it to finish signing it off.
+    let unsubmitted_groups: Vec<String> = match get_connection_qms() {
+        Ok(mut qms_client) => qms_client
+            .query(
+                "SELECT DISTINCT production_group FROM packaging_projects WHERE status NOT IN ('completed', 'removed_completed')",
+                &[],
+            )
+            .map(|rows| rows.into_iter().map(|r| r.get(0)).collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
     let mut list = Vec::new();
     let rows = client.query(
         "SELECT pa.\"PLMId\" AS \"PLMId\",
@@ -850,7 +900,7 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
            AND pa.\"ProductionGroup\" IS NOT NULL
            AND pa.\"ProductionGroup\" != ''
            AND pa.\"ProductionType\" IN ('CMT', 'In-house')
-           AND pa.\"PLMId\" NOT IN (SELECT \"PLMId\" FROM plm_activity_shadowing)
+           AND (pa.\"PLMId\" NOT IN (SELECT \"PLMId\" FROM plm_activity_shadowing) OR pa.\"ProductionGroup\" = ANY($1))
          GROUP BY pa.\"PLMId\", pa.\"Brand\", pa.\"Season\", pa.\"ArticleName\", pa.\"ProductionGroup\", pa.\"ProductionType\"
 
          UNION ALL
@@ -873,8 +923,8 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
            AND pgl.\"ProductionGroup\" != ''
            AND pgl.\"ProductionGroup\" NOT IN (SELECT DISTINCT \"ProductionGroup\" FROM plm_activity WHERE \"ProductionGroup\" IS NOT NULL)
          GROUP BY pgl.\"ProductionGroup\", pgl.\"ItemId\", pgl.\"SearchName\", pg.\"ProductionType\"
-         ORDER BY \"ProductionGroup\" DESC", 
-        &[]
+         ORDER BY \"ProductionGroup\" DESC",
+        &[&unsubmitted_groups]
     ).map_err(|e| format!("Failed to query active plm_activities: {}", e))?;
 
     for row in rows {
@@ -965,7 +1015,7 @@ fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &
 
 /// DB-only upsert for existing projects when D365 is unreachable.
 /// Preserves existing job IDs and sales_price; updates status/deductions/timestamp.
-fn save_packaging_project_db_only(mut client: postgres::Client, project: PackagingProject) -> Result<String, String> {
+fn save_packaging_project_db_only(mut client: PooledClient, project: PackagingProject) -> Result<String, String> {
     // Resolve project_id and preserve existing job IDs from DB
     let mut project_id = project.project_id.clone();
     let mut final_cut_job = project.cmt_cut_job_id.clone();
@@ -2218,6 +2268,32 @@ pub fn get_packaging_projects_summary() -> Result<Value, String> {
     Ok(serde_json::Value::Array(projects))
 }
 
+// Minimal poll target for the approval-signature waiters in the console: while a session
+// awaits factory-rep/HO sign-off, the UI needs to know only whether these three fields changed —
+// not the full project (all sessions, all report lines, every defect image's base64 blob). Using
+// get_packaging_project_details for this on an 8s interval was pulling multi-MB payloads over
+// the network purely to read a signature string.
+pub fn get_session_approval_status(project_id: &str, session_id: &str) -> Result<Value, String> {
+    ensure_init();
+    let mut client = get_connection_qms()?;
+    let row = client.query_opt(
+        "SELECT approval_status, approval_signature, ho_approval_signature, director_approval_signature
+         FROM packaging_project_sessions WHERE project_id = $1 AND session_id = $2",
+        &[&project_id, &session_id],
+    ).map_err(|e| format!("Failed to query session approval status: {}", e))?;
+
+    match row {
+        Some(r) => Ok(serde_json::json!({
+            "session_id": session_id,
+            "approval_status": r.get::<_, Option<String>>(0),
+            "approval_signature": r.get::<_, Option<String>>(1),
+            "ho_approval_signature": r.get::<_, Option<String>>(2),
+            "director_approval_signature": r.get::<_, Option<String>>(3),
+        })),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
 pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> {
     ensure_init();
     let mut client = get_connection_qms()?;
@@ -2290,6 +2366,60 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
         }
     }
 
+    // Batch-fetch all sessions' report lines in one query instead of one round-trip per session
+    // (same shape as the deduction-lines batch above) — a project with N cycles was otherwise
+    // paying N sequential remote queries just to open it.
+    let mut all_lines_map: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+    if !session_ids_batch.is_empty() {
+        if let Ok(line_rows) = client.query(
+            "SELECT report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
+                    item_id, size_val, global_display_order, reject_produksi, reject_finishing,
+                    reject_embro, qty_order, total_qty_sample, barang_hilang, reject_cutting,
+                    total_reject_qty, reject_printing, ref_rec_id, total_good_qty, reject_sewing,
+                    reject_washing, gramasi, btj, reject_bahan, session_qty, session_version, created_at
+             FROM packaging_project_reports
+             WHERE project_id = $1 AND session_id = ANY($2)
+             ORDER BY session_id ASC, line_no ASC, global_display_order ASC",
+            &[&project_id, &session_ids_batch],
+        ) {
+            for row in line_rows {
+                let sid: Option<String> = row.get(1);
+                let sid = match sid { Some(s) => s, None => continue };
+                let created_at: NaiveDateTime = row.get(27);
+                all_lines_map.entry(sid).or_default().push(serde_json::json!({
+                    "report_id": row.get::<_, String>(0),
+                    "session_id": row.get::<_, Option<String>>(1),
+                    "project_id": row.get::<_, String>(2),
+                    "data_area_id": row.get::<_, Option<String>>(3),
+                    "line_no": row.get::<_, Option<i32>>(4),
+                    "job_transaction_id": row.get::<_, Option<String>>(5),
+                    "item_id": row.get::<_, Option<String>>(6),
+                    "size_val": row.get::<_, Option<String>>(7),
+                    "global_display_order": row.get::<_, Option<i32>>(8),
+                    "reject_produksi": row.get::<_, Option<i32>>(9),
+                    "reject_finishing": row.get::<_, Option<i32>>(10),
+                    "reject_embro": row.get::<_, Option<i32>>(11),
+                    "qty_order": row.get::<_, Option<i32>>(12),
+                    "total_qty_sample": row.get::<_, Option<i32>>(13),
+                    "barang_hilang": row.get::<_, Option<i32>>(14),
+                    "reject_cutting": row.get::<_, Option<i32>>(15),
+                    "total_reject_qty": row.get::<_, Option<i32>>(16),
+                    "reject_printing": row.get::<_, Option<i32>>(17),
+                    "ref_rec_id": row.get::<_, Option<i64>>(18),
+                    "total_good_qty": row.get::<_, Option<i32>>(19),
+                    "reject_sewing": row.get::<_, Option<i32>>(20),
+                    "reject_washing": row.get::<_, Option<i32>>(21),
+                    "gramasi": row.get::<_, Option<f64>>(22),
+                    "btj": row.get::<_, Option<i32>>(23),
+                    "reject_bahan": row.get::<_, Option<i32>>(24),
+                    "session_qty": row.get::<_, f64>(25),
+                    "session_version": row.get::<_, Option<String>>(26),
+                    "created_at": created_at.format("%Y-%m-%dT%H:%M:%S.000Z").to_string(),
+                }));
+            }
+        }
+    }
+
     let mut sessions = Vec::new();
     for s_row in &session_rows {
         let session_id: String = s_row.get(0);
@@ -2297,11 +2427,10 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
         let s_ended: Option<NaiveDateTime> = s_row.get(5);
         let s_inspect_date: Option<chrono::NaiveDate> = s_row.get(6);
 
-        // Fetch session report lines (CMT-Pak lines for this session) using the existing client connection
-        let mut session_lines_json = match get_packaging_project_reports_impl(&mut client, &project_id, Some(&session_id)) {
-            Ok(lines) => lines,
-            Err(_) => serde_json::Value::Array(vec![]),
-        };
+        // Pull this session's lines from the batch fetched above.
+        let mut session_lines_json = serde_json::Value::Array(
+            all_lines_map.get(&session_id).cloned().unwrap_or_default()
+        );
 
         // Auto-recovery safety fallback: if session has 0 lines, populate it by duplicating INITIAL_PAK lines
         if let Some(arr) = session_lines_json.as_array() {
@@ -2480,41 +2609,73 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
     }))
 }
 
-pub fn read_offline_projects_cache(app: AppHandle) -> Result<Value, String> {
+fn read_json_cache_file(app: &AppHandle, filename: &str) -> Result<Value, String> {
     let cache_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let cache_path = cache_dir.join("packaging_projects_cache.json");
-    
+    let cache_path = cache_dir.join(filename);
+
     if !cache_path.exists() {
         return Ok(serde_json::json!([]));
     }
-    
+
     let content = std::fs::read_to_string(&cache_path)
         .map_err(|e| format!("Failed to read cache file: {}", e))?;
-        
+
     let val: Value = serde_json::from_str(&content).unwrap_or_else(|_| {
-        println!("Warning: Cache file is corrupted, returning empty array");
+        println!("Warning: Cache file {} is corrupted, returning empty array", filename);
         serde_json::json!([])
     });
-    
+
     Ok(val)
 }
 
-pub fn write_offline_projects_cache(app: AppHandle, data: Value) -> Result<(), String> {
+fn write_json_cache_file(app: &AppHandle, filename: &str, data: &Value) -> Result<(), String> {
     let cache_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    
-    // Ensure parent directory exists
     std::fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("Failed to create local data directory: {}", e))?;
-        
-    let cache_path = cache_dir.join("packaging_projects_cache.json");
-    
-    let content = serde_json::to_string_pretty(&data)
+    let cache_path = cache_dir.join(filename);
+
+    // Compact, not pretty — this file is rewritten in full on every autosave and nobody reads
+    // it by hand; pretty-printing only adds serialization cost and disk size for no benefit.
+    let content = serde_json::to_string(data)
         .map_err(|e| format!("Failed to serialize cache data: {}", e))?;
-        
+
     std::fs::write(&cache_path, content)
-        .map_err(|e| format!("Failed to write cache file: {}", e))?;
-        
-    Ok(())
+        .map_err(|e| format!("Failed to write cache file: {}", e))
+}
+
+pub fn read_offline_projects_cache(app: AppHandle) -> Result<Value, String> {
+    read_json_cache_file(&app, "packaging_projects_cache.json")
+}
+
+// On-demand read of a single project's full offline record (sessions/report lines/defect
+// images/verified_doc included). The in-memory cache in the frontend only keeps full detail
+// resident for the one project currently open — everything else is summary-only in memory to
+// bound RAM, even though the disk file still holds full detail for every project this device
+// downloaded. This is how the console re-hydrates a previously-downloaded project's full detail
+// when it's reopened while offline.
+pub fn read_offline_project_detail(app: AppHandle, project_id: String) -> Result<Value, String> {
+    let all = read_offline_projects_cache(app)?;
+    let found = all.as_array().and_then(|arr| {
+        arr.iter().find(|p| p.get("project_id").and_then(|v| v.as_str()) == Some(project_id.as_str())).cloned()
+    });
+    Ok(found.unwrap_or(Value::Null))
+}
+
+pub fn write_offline_projects_cache(app: AppHandle, data: Value) -> Result<(), String> {
+    write_json_cache_file(&app, "packaging_projects_cache.json", &data)
+}
+
+// Pending-writes queue: the precise, compact record of what still needs to be pushed to the
+// server while offline — a handful of {cmd, args} entries, not whole project trees. This is what
+// lets the in-memory project cache stay bounded to just the one project a user actually has open
+// (see packaging_service.ts) without losing track of offline edits made to OTHER projects: the
+// edit itself, not the project it belongs to, is what gets kept around until synced.
+pub fn read_offline_operations_queue(app: AppHandle) -> Result<Value, String> {
+    read_json_cache_file(&app, "packaging_pending_operations.json")
+}
+
+pub fn write_offline_operations_queue(app: AppHandle, data: Value) -> Result<(), String> {
+    write_json_cache_file(&app, "packaging_pending_operations.json", &data)
 }
 
 
