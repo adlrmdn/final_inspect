@@ -985,7 +985,8 @@ pub fn get_plm_activity_items(plm_id: &str) -> Result<Vec<PlmActivityItem>, Stri
 /// the RPA invoice queue) without either signature ever existing.
 fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &str) -> bool {
     let row = client.query_opt(
-        "SELECT approval_status, approval_signature, ho_approval_signature
+        "SELECT approval_status, approval_signature, ho_approval_signature,
+                ho_validation_signature, director_approval_signature
          FROM packaging_project_sessions
          WHERE project_id = $1
          ORDER BY cycle_number DESC
@@ -999,6 +1000,8 @@ fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &
     let approval_status: Option<String> = row.get(0);
     let approval_signature: Option<String> = row.get(1);
     let ho_approval_signature: Option<String> = row.get(2);
+    let ho_validation_signature: Option<String> = row.get(3);
+    let director_approval_signature: Option<String> = row.get(4);
 
     let stage1_done = approval_status.as_deref() == Some("approved")
         || approval_signature
@@ -1010,7 +1013,28 @@ fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &
         .map(|s| s.contains("Digitally Signed:"))
         .unwrap_or(false);
 
-    stage1_done && stage2_done
+    // Stage 3 (Director): the portal's 3-stage workflow reopens Report
+    // Validation on a Director rejection by clearing ho_validation_signature/
+    // director_approval_signature while deliberately leaving stage1/stage2
+    // signatures intact (so MD Production doesn't redo consumption entry).
+    // That means stage1_done && stage2_done alone stays true across a
+    // rejection cycle -- this guard must also require real Director
+    // authorization once a project has entered that gate at all, or a stale
+    // client-side "completed" status can slip a rejected/re-review project
+    // through as done. Projects that never entered the Director gate
+    // (ho_validation_signature never set -- the older two-stage flow) are
+    // unaffected, so historical completions still work.
+    let entered_director_gate = ho_validation_signature
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let stage3_done = !entered_director_gate
+        || director_approval_signature
+            .as_deref()
+            .map(|s| s.contains("Digitally Signed:"))
+            .unwrap_or(false);
+
+    stage1_done && stage2_done && stage3_done
 }
 
 /// DB-only upsert for existing projects when D365 is unreachable.
