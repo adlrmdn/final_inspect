@@ -3539,17 +3539,30 @@ mod tests {
 
     #[test]
     fn test_save_project_live() {
+        // Unique per run, never a fixed literal: a hardcoded ID here once
+        // collided with nothing at write time but left a placeholder row that
+        // a real 6-week QC/approval cycle was later carried out against, because
+        // the cleanup below silently failed once and nothing marked the row as
+        // test data. Every value that could ever read as real production data
+        // is either nonce-suffixed or explicitly flagged DO-NOT-USE.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let test_project_id = format!("TEST_LIVE_DOWNLOAD_{}", nonce);
+        let test_production_group = format!("TEST_PRG_LIVE_{}", nonce);
+
         let project = PackagingProject {
-            project_id: "TEST_LIVE_DOWNLOAD_123".to_string(),
-            plm_id: "TEST_PLM_LIVE_999999".to_string(),
+            project_id: test_project_id.clone(),
+            plm_id: format!("TEST_PLM_LIVE_{}", nonce),
             brand: "Minimal".to_string(),
             season: "FALL-26".to_string(),
-            article_name: "Minimal Viviene Blazer Black".to_string(),
-            production_group: "TEST_PRG_LIVE_999999".to_string(),
-            po_info: Some("PO_TEST".to_string()),
+            article_name: "TEST ARTICLE - DO NOT USE".to_string(),
+            production_group: test_production_group.clone(),
+            po_info: Some("TEST_PO_DO_NOT_USE".to_string()),
             po_qty: Some(100.0),
             po_plan_date: Some("2026-06-11".to_string()),
-            po_vendor: Some("Vendor".to_string()),
+            po_vendor: Some("TEST VENDOR - DO NOT USE".to_string()),
             status: "downloaded".to_string(),
             cmt_cut_job_id: Some("TEST_JOB_CUT_999".to_string()),
             cmt_pak_job_id: Some("TEST_JOB_PAK_999".to_string()),
@@ -3565,10 +3578,17 @@ mod tests {
         println!("RESULT OF LIVE SAVE: {:?}", res);
         assert!(res.is_ok(), "Expected live save to succeed: {:?}", res);
 
-        // Clean up mock project from database after verification to avoid leaking mock values into the active directory
-        if let Ok(mut client) = get_connection_qms() {
-            let _ = client.execute("DELETE FROM packaging_projects WHERE project_id = 'TEST_LIVE_DOWNLOAD_123' OR production_group = 'TEST_PRG_LIVE_999999'", &[]);
-        }
+        // Clean up — asserted, not swallowed. A cleanup that fails silently is
+        // exactly how a placeholder row gets left behind for a real user to
+        // later adopt, so a failure here must fail the test loudly instead.
+        let mut client = get_connection_qms().expect("QMS connection failed during test cleanup");
+        let deleted = client
+            .execute(
+                "DELETE FROM packaging_projects WHERE project_id = $1 OR production_group = $2",
+                &[&test_project_id, &test_production_group],
+            )
+            .expect("Failed to delete test project during cleanup");
+        assert!(deleted >= 1, "Cleanup deleted no rows — test project was not removed");
     }
 
     #[test]
