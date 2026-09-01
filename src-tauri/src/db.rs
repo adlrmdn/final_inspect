@@ -11,11 +11,34 @@ fn ensure_init() {
     DB_INIT.get_or_init(|| { let _ = init_tables(); });
 }
 
-// PostgreSQL Database Connection URL configurations
-const VSM_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/vsm";
-pub(crate) const QMS_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/qms";
-const POSTGRES_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/postgres";
-const RPA_DB_URL: &str = "postgres://postgres:dsteam141@gateway-LB-0daa0ad89236a16a.elb.ap-southeast-3.amazonaws.com:5432/rpa";
+// PostgreSQL Database Connection URL configurations — read from env (see src-tauri/.env.example)
+// rather than hardcoded, since these carry live credentials.
+fn env_db_url(var_name: &str, cell: &'static OnceLock<String>) -> &'static str {
+    cell.get_or_init(|| {
+        std::env::var(var_name).unwrap_or_else(|_| panic!("{var_name} is not set (check src-tauri/.env)"))
+    })
+    .as_str()
+}
+
+fn vsm_db_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    env_db_url("VSM_DB_URL", &URL)
+}
+
+pub(crate) fn qms_db_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    env_db_url("QMS_DB_URL", &URL)
+}
+
+fn postgres_db_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    env_db_url("POSTGRES_DB_URL", &URL)
+}
+
+fn rpa_db_url() -> &'static str {
+    static URL: OnceLock<String> = OnceLock::new();
+    env_db_url("RPA_DB_URL", &URL)
+}
 
 
 // Struct representing a QC Inspection Template
@@ -325,7 +348,7 @@ fn build_pool(db_url: &str) -> PgPool {
 
 // Connect to VSM Reference Database
 fn get_connection_vsm() -> Result<PooledClient, String> {
-    VSM_POOL.get_or_init(|| build_pool(VSM_DB_URL))
+    VSM_POOL.get_or_init(|| build_pool(vsm_db_url()))
         .get()
         .map_err(|e| format!("Failed to connect to VSM reference DB: {}", e))
 }
@@ -334,7 +357,7 @@ fn get_connection_vsm() -> Result<PooledClient, String> {
 fn get_connection_qms() -> Result<PooledClient, String> {
     use std::str::FromStr;
     use std::time::Duration;
-    let pool = QMS_POOL.get_or_init(|| build_pool(QMS_DB_URL));
+    let pool = QMS_POOL.get_or_init(|| build_pool(qms_db_url()));
 
     match pool.get() {
         Ok(c) => Ok(c),
@@ -342,7 +365,7 @@ fn get_connection_qms() -> Result<PooledClient, String> {
             let err_str = e.to_string();
             // If connection failed because database "qms" does not exist, connect to postgres and create it
             if err_str.contains("database \"qms\" does not exist") {
-                let mut root_config = postgres::Config::from_str(POSTGRES_DB_URL)
+                let mut root_config = postgres::Config::from_str(postgres_db_url())
                     .map_err(|e2| format!("Invalid Postgres config: {}", e2))?;
                 root_config.connect_timeout(Duration::from_millis(1500));
                 match root_config.connect(NoTls) {
@@ -364,7 +387,7 @@ fn get_connection_qms() -> Result<PooledClient, String> {
 fn get_connection_rpa() -> Result<PooledClient, String> {
     use std::str::FromStr;
     use std::time::Duration;
-    let pool = RPA_POOL.get_or_init(|| build_pool(RPA_DB_URL));
+    let pool = RPA_POOL.get_or_init(|| build_pool(rpa_db_url()));
 
     match pool.get() {
         Ok(c) => Ok(c),
@@ -372,7 +395,7 @@ fn get_connection_rpa() -> Result<PooledClient, String> {
             let err_str = e.to_string();
             // If connection failed because database "rpa" does not exist, connect to postgres and create it
             if err_str.contains("database \"rpa\" does not exist") {
-                let mut root_config = postgres::Config::from_str(POSTGRES_DB_URL)
+                let mut root_config = postgres::Config::from_str(postgres_db_url())
                     .map_err(|e2| format!("Invalid Postgres config: {}", e2))?;
                 root_config.connect_timeout(Duration::from_millis(1500));
                 match root_config.connect(NoTls) {

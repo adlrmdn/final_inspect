@@ -21,7 +21,7 @@ pub fn start(app_handle: tauri::AppHandle) {
 }
 
 fn connect_and_listen(app_handle: &tauri::AppHandle) -> Result<(), postgres::Error> {
-    let mut client = Client::connect(crate::db::QMS_DB_URL, NoTls)?;
+    let mut client = Client::connect(crate::db::qms_db_url(), NoTls)?;
     client.execute("LISTEN qms_updates", &[])?;
 
     // `blocking_iter` parks this thread until a notification or connection error arrives.
