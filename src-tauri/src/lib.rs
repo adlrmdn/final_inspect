@@ -335,6 +335,35 @@ async fn read_local_file_base64(path: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+struct SmtpConfig {
+    host: String,
+    port: u16,
+    sender_email: String,
+    password: String,
+    display_name: String,
+}
+
+fn load_smtp_config(
+    env_prefix: &str,
+    default_host: &str,
+    default_port: u16,
+    default_display_name: &str,
+) -> Result<SmtpConfig, String> {
+    let host = std::env::var(format!("{env_prefix}_SMTP_HOST")).unwrap_or_else(|_| default_host.to_string());
+    let port = std::env::var(format!("{env_prefix}_SMTP_PORT"))
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(default_port);
+    let sender_email = std::env::var(format!("{env_prefix}_SMTP_USER"))
+        .map_err(|_| format!("{env_prefix}_SMTP_USER is not set"))?;
+    let password = std::env::var(format!("{env_prefix}_SMTP_PASSWORD"))
+        .map_err(|_| format!("{env_prefix}_SMTP_PASSWORD is not set"))?;
+    let display_name = std::env::var(format!("{env_prefix}_SMTP_DISPLAY_NAME"))
+        .unwrap_or_else(|_| default_display_name.to_string());
+
+    Ok(SmtpConfig { host, port, sender_email, password, display_name })
+}
+
 #[tauri::command]
 async fn send_email_report(
     recipient: String,
@@ -348,11 +377,6 @@ async fn send_email_report(
         use lettre::{Message, SmtpTransport, Transport};
         use lettre::message::{MultiPart, SinglePart, Attachment, header::ContentType};
 
-        let sender_email = "rpa@megaperintis.co.id";
-        let parsed_from = sender_email
-            .parse::<lettre::address::Address>()
-            .map_err(|e| format!("Invalid sender address: {}", e))?;
-
         let emails: Vec<&str> = recipient
             .split(',')
             .map(|s| s.trim())
@@ -363,15 +387,9 @@ async fn send_email_report(
             return Err("Recipient email address is empty".to_string());
         }
 
-        let creds = Credentials::new(sender_email.to_string(), "T]ra9C!Cwhc+".to_string());
-        let mailer = SmtpTransport::starttls_relay("mail.megaperintis.co.id")
-            .map_err(|e| e.to_string())?
-            .port(587)
-            .credentials(creds)
-            .timeout(Some(std::time::Duration::from_secs(15)))
-            .build();
-
-        let display_name = Some("MPG QC Console System".to_string());
+        // Primary relay (company domain) with a Gmail backup for when it's down.
+        let primary = load_smtp_config("MEGAPERINTIS", "mail.megaperintis.co.id", 587, "MPG QC Console System")?;
+        let backup = load_smtp_config("GMAIL", "smtp.gmail.com", 587, "MPG QC Console System");
 
         // Parse and decode the base64 data URL attachment if provided
         let mut att_bytes = None;
@@ -402,65 +420,93 @@ async fn send_email_report(
             }
         }
 
-        for email_addr in emails {
-            let parsed_to = email_addr
+        let send_via = |config: &SmtpConfig| -> Result<(), String> {
+            let parsed_from = config
+                .sender_email
                 .parse::<lettre::address::Address>()
-                .map_err(|e| format!("Invalid recipient email address '{}': {}", email_addr, e))?;
+                .map_err(|e| format!("Invalid sender address: {}", e))?;
 
-            // Plain text summary fallback to reduce spam score
-            let plain_text_body = format!(
-                "Dear Team,\n\nPlease find attached the official Quality Control Inspection Report.\n\nSubject: {}\n\nThis is an automated system notification from Final Inspection QC.",
-                subject
-            );
+            let creds = Credentials::new(config.sender_email.clone(), config.password.clone());
+            let mailer = SmtpTransport::starttls_relay(&config.host)
+                .map_err(|e| e.to_string())?
+                .port(config.port)
+                .credentials(creds)
+                .timeout(Some(std::time::Duration::from_secs(15)))
+                .build();
 
-            // Construct standard alternative body (plain text + html body)
-            let alternative_part = MultiPart::alternative()
-                .singlepart(
-                    SinglePart::builder()
-                        .header(ContentType::TEXT_PLAIN)
-                        .body(plain_text_body),
-                )
-                .singlepart(
-                    SinglePart::builder()
-                        .header(ContentType::TEXT_HTML)
-                        .body(html_body.clone()),
+            for email_addr in &emails {
+                let parsed_to = email_addr
+                    .parse::<lettre::address::Address>()
+                    .map_err(|e| format!("Invalid recipient email address '{}': {}", email_addr, e))?;
+
+                // Plain text summary fallback to reduce spam score
+                let plain_text_body = format!(
+                    "Dear Team,\n\nPlease find attached the official Quality Control Inspection Report.\n\nSubject: {}\n\nThis is an automated system notification from Final Inspection QC.",
+                    subject
                 );
 
-            let message_builder = Message::builder()
-                .from(lettre::message::Mailbox::new(display_name.clone(), parsed_from.clone()))
-                .to(lettre::message::Mailbox::new(None, parsed_to))
-                .subject(&subject);
+                // Construct standard alternative body (plain text + html body)
+                let alternative_part = MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(plain_text_body),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_HTML)
+                            .body(html_body.clone()),
+                    );
 
-            let email = if let (Some(bytes), Some(mime_str)) = (&att_bytes, &att_mime) {
-                let att_content_type = ContentType::parse(mime_str)
-                    .map_err(|e| format!("Invalid content type: {}", e))?;
+                let message_builder = Message::builder()
+                    .from(lettre::message::Mailbox::new(Some(config.display_name.clone()), parsed_from.clone()))
+                    .to(lettre::message::Mailbox::new(None, parsed_to))
+                    .subject(&subject);
 
-                let final_filename = if let Some(base_name) = &attachment_filename {
-                    if base_name.ends_with(".pdf") || base_name.ends_with(".png") || base_name.ends_with(".jpg") || base_name.ends_with(".jpeg") {
-                        base_name.clone()
+                let email = if let (Some(bytes), Some(mime_str)) = (&att_bytes, &att_mime) {
+                    let att_content_type = ContentType::parse(mime_str)
+                        .map_err(|e| format!("Invalid content type: {}", e))?;
+
+                    let final_filename = if let Some(base_name) = &attachment_filename {
+                        if base_name.ends_with(".pdf") || base_name.ends_with(".png") || base_name.ends_with(".jpg") || base_name.ends_with(".jpeg") {
+                            base_name.clone()
+                        } else {
+                            format!("{}{}", base_name, att_ext)
+                        }
                     } else {
-                        format!("{}{}", base_name, att_ext)
-                    }
+                        format!("QC_Report{}", att_ext)
+                    };
+
+                    let attachment = Attachment::new(final_filename)
+                        .body(bytes.clone(), att_content_type);
+
+                    message_builder.multipart(
+                        MultiPart::mixed()
+                            .multipart(alternative_part)
+                            .singlepart(attachment)
+                    ).map_err(|e| e.to_string())?
                 } else {
-                    format!("QC_Report{}", att_ext)
+                    message_builder.multipart(alternative_part).map_err(|e| e.to_string())?
                 };
 
-                let attachment = Attachment::new(final_filename)
-                    .body(bytes.clone(), att_content_type);
+                mailer.send(&email).map_err(|e| e.to_string())?;
+            }
 
-                message_builder.multipart(
-                    MultiPart::mixed()
-                        .multipart(alternative_part)
-                        .singlepart(attachment)
-                ).map_err(|e| e.to_string())?
-            } else {
-                message_builder.multipart(alternative_part).map_err(|e| e.to_string())?
-            };
+            Ok(())
+        };
 
-            mailer.send(&email).map_err(|e| e.to_string())?;
+        match send_via(&primary) {
+            Ok(()) => Ok(()),
+            Err(primary_err) => {
+                eprintln!("Primary SMTP (megaperintis) failed, falling back to Gmail: {primary_err}");
+                let backup = backup?;
+                send_via(&backup).map_err(|backup_err| {
+                    format!(
+                        "Both SMTP relays failed. Primary (megaperintis): {primary_err}. Backup (Gmail): {backup_err}"
+                    )
+                })
+            }
         }
-
-        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -489,6 +535,8 @@ pub fn percent_decode(s: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenvy::dotenv().ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
