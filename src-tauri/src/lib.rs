@@ -533,9 +533,28 @@ pub fn percent_decode(s: &str) -> String {
 }
 
 
+// A packaged build doesn't get to pick its own working directory (launched from a desktop
+// icon, an AppImage mount, etc.), so `dotenvy::dotenv()` alone — which only walks up from the
+// process CWD — reliably finds `.env` in `cargo run`/`tauri dev` but not in an installed build.
+// Look for it next to the actual binary (and next to the AppImage file, when running as one)
+// first; CWD-based lookup stays as a fallback for dev.
+fn load_env_file() {
+    if let Ok(appimage_path) = std::env::var("APPIMAGE") {
+        if let Some(dir) = std::path::Path::new(&appimage_path).parent() {
+            let _ = dotenvy::from_path(dir.join(".env"));
+        }
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(dir) = exe_path.parent() {
+            let _ = dotenvy::from_path(dir.join(".env"));
+        }
+    }
+    dotenvy::dotenv().ok();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    dotenvy::dotenv().ok();
+    load_env_file();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
