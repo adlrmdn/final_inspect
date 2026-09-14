@@ -2354,10 +2354,10 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
     let season: String = row.get(3);
     let article_name: String = row.get(4);
     let production_group: String = row.get(5);
-    let po_info: Option<String> = row.get(6);
+    let mut po_info: Option<String> = row.get(6);
     let po_qty: Option<f64> = row.get(7);
     let po_plan_date: Option<String> = row.get(8);
-    let po_vendor: Option<String> = row.get(9);
+    let mut po_vendor: Option<String> = row.get(9);
     let status: String = row.get(10);
     let cmt_cut_job_id: Option<String> = row.get(11);
     let cmt_pak_job_id: Option<String> = row.get(12);
@@ -2367,6 +2367,31 @@ pub fn get_packaging_project_details(project_id: &str) -> Result<Value, String> 
     let deduction_amount: f64 = row.get(16);
     let created_at: NaiveDateTime = row.get(17);
     let updated_at: NaiveDateTime = row.get(18);
+
+    // Silently refresh PO number/vendor from the live VSM production_groups -> po_headers
+    // mapping every time the workspace is opened. packaging_projects only ever snapshots
+    // these fields once, at download time (save_packaging_project), so without this the
+    // vendor shown here drifts forever once D365 reassigns the PO's vendor after download.
+    if let Ok(mut vsm_client) = get_connection_vsm() {
+        if let Ok(Some(vsm_row)) = vsm_client.query_opt(
+            "SELECT ph.\"PurchaseOrderNumber\", ph.\"PurchaseOrderName\"
+             FROM production_groups pg
+             JOIN po_headers ph ON ph.\"PurchaseOrderNumber\" = pg.\"PONumber\"
+             WHERE pg.\"ProductionGroup\" = $1",
+            &[&production_group],
+        ) {
+            let live_po_info: Option<String> = vsm_row.get(0);
+            let live_po_vendor: Option<String> = vsm_row.get(1);
+            if live_po_info.is_some() && (live_po_info != po_info || live_po_vendor != po_vendor) {
+                let _ = client.execute(
+                    "UPDATE packaging_projects SET po_info = $1, po_vendor = $2 WHERE project_id = $3",
+                    &[&live_po_info, &live_po_vendor, &project_id],
+                );
+                po_info = live_po_info;
+                po_vendor = live_po_vendor;
+            }
+        }
+    }
 
     let base_report = serde_json::Value::Null;
 
