@@ -892,7 +892,9 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
     // reachable in the picker if its QC report was never actually completed (report not yet
     // submitted for signature, or it got soft/stale-removed before completion). Otherwise the
     // moment the factory floor finishes, the in-flight inspection becomes permanently
-    // unopenable — nobody can find it to finish signing it off.
+    // unopenable — nobody can find it to finish signing it off. Reused below for standalone
+    // (PLM-less) groups too: a group whose lines are all ReportedFinished/Completed in D365
+    // still needs to be downloadable/searchable here until QC has actually completed it.
     let unsubmitted_groups: Vec<String> = match get_connection_qms() {
         Ok(mut qms_client) => qms_client
             .query(
@@ -941,7 +943,8 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
          FROM production_group_lines pgl
          LEFT JOIN production_groups pg ON pgl.\"ProductionGroup\" = pg.\"ProductionGroup\"
          LEFT JOIN po_headers ph ON pg.\"PONumber\" = ph.\"PurchaseOrderNumber\"
-         WHERE pgl.\"ProdStatus\" = 'StartedUp'
+         WHERE (pgl.\"ProdStatus\" = 'StartedUp'
+                OR (pgl.\"ProdStatus\" IN ('ReportedFinished', 'Completed') AND pgl.\"ProductionGroup\" = ANY($1)))
            AND pgl.\"ProductionGroup\" IS NOT NULL
            AND pgl.\"ProductionGroup\" != ''
            AND pgl.\"ProductionGroup\" NOT IN (SELECT DISTINCT \"ProductionGroup\" FROM plm_activity WHERE \"ProductionGroup\" IS NOT NULL)
