@@ -58,11 +58,26 @@ export const ProjectSelectionDirectory: React.FC<ProjectSelectionDirectoryProps>
   const [filterMode, setFilterMode] = useState<'device' | 'all'>('device');
 
   const filteredProjects = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+
+    // A search query looks across every downloaded project (finished ones included),
+    // regardless of the device toggle, so a completed style stays findable by PRG/name
+    // even after it drops out of the "active" VSM picker above.
+    if (q) {
+      return packagingProjects.filter(
+        (p: any) =>
+          (p.plm_id || '').toLowerCase().includes(q) ||
+          (p.article_name || '').toLowerCase().includes(q) ||
+          (p.brand || '').toLowerCase().includes(q) ||
+          (p.production_group || '').toLowerCase().includes(q)
+      );
+    }
+
     if (filterMode === 'device') {
       return packagingProjects.filter((p: any) => deviceProjectIds.includes(p.project_id));
     }
     return packagingProjects;
-  }, [packagingProjects, deviceProjectIds, filterMode]);
+  }, [packagingProjects, deviceProjectIds, filterMode, searchQuery]);
 
   const deviceCount = React.useMemo(() => {
     return packagingProjects.filter((p: any) => deviceProjectIds.includes(p.project_id)).length;

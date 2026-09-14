@@ -69,11 +69,14 @@ export function getFuzzyMatchScore(query: string, candidate: string): number {
   return totalScore / qTokens.length;
 }
 
-const COLORS = ['beige', 'black', 'brown', 'navy', 'white', 'red', 'green', 'blue', 'yellow', 'grey', 'gray', 'orange', 'purple', 'pink', 'cream', 'olive', 'maroon', 'khaki', 'lilac', 'mint', 'charcoal', 'gold', 'silver', 'peach', 'coral', 'tan', 'mustard', 'teal', 'magenta', 'plum', 'rust', 'sand', 'stone', 'denim', 'camel', 'taupe', 'sage', 'lavender'];
+const COLORS = ['beige', 'black', 'brown', 'navy', 'white', 'offwhite', 'red', 'green', 'blue', 'yellow', 'grey', 'gray', 'orange', 'purple', 'pink', 'cream', 'olive', 'maroon', 'khaki', 'lilac', 'mint', 'charcoal', 'gold', 'silver', 'peach', 'coral', 'tan', 'mustard', 'teal', 'magenta', 'plum', 'rust', 'sand', 'stone', 'denim', 'camel', 'taupe', 'sage', 'lavender'];
 
 // Standalone helper to parse style name and color from a string
 function parseStyleAndColor(text: string): { style: string; color: string | null } {
   const words = text.toLowerCase()
+    // Collapse "off white" / "off-white" into the single token "offwhite" so it matches COLORS
+    // regardless of how the operator typed it.
+    .replace(/off[\s-]+white/g, 'offwhite')
     .replace(/(buka|project|proyek|open|the|untuk|style|cari|search|inspeksi|inspect|unduh|download|artikel|blazer|dress|pants|tshirt)/g, '')
     .replace(/[^a-z0-9\s]/g, '')
     .trim()
