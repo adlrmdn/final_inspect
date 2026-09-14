@@ -889,16 +889,27 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
     let mut client = get_connection_vsm()?;
 
     // Exception: a PLM activity that VSM has shadowed as finished-in-production must stay
-    // reachable in the picker if its QC report was never actually completed (report not yet
-    // submitted for signature, or it got soft/stale-removed before completion). Otherwise the
+    // reachable in the picker if its QC report was never actually completed. Otherwise the
     // moment the factory floor finishes, the in-flight inspection becomes permanently
     // unopenable — nobody can find it to finish signing it off. Reused below for standalone
     // (PLM-less) groups too: a group whose lines are all ReportedFinished/Completed in D365
     // still needs to be downloadable/searchable here until QC has actually completed it.
-    let unsubmitted_groups: Vec<String> = match get_connection_qms() {
+    //
+    // Deliberately a NEGATIVE list (groups QC already completed), not a positive one (groups
+    // with an existing non-completed project): a style that VSM/D365 finished before QC ever
+    // downloaded/started a project for it has NO packaging_projects row at all yet, so a
+    // positive "non-completed" list would never contain it either — reproducing the exact bug
+    // this exception exists to prevent. Excluding only confirmed-completed groups correctly
+    // covers both "no project yet" and "project exists but not finished".
+    //
+    // Fails OPEN on a QMS outage (empty list => nothing excluded => finished groups stay
+    // visible): the worse outcome here is a handful of already-completed styles briefly
+    // reappearing in the picker (harmless — opening one just reopens the existing completed
+    // project), not silently hiding real, not-yet-actioned inspections again.
+    let completed_groups: Vec<String> = match get_connection_qms() {
         Ok(mut qms_client) => qms_client
             .query(
-                "SELECT DISTINCT production_group FROM packaging_projects WHERE status NOT IN ('completed', 'removed_completed')",
+                "SELECT DISTINCT production_group FROM packaging_projects WHERE status IN ('completed', 'removed_completed')",
                 &[],
             )
             .map(|rows| rows.into_iter().map(|r| r.get(0)).collect())
@@ -925,7 +936,7 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
            AND pa.\"ProductionGroup\" IS NOT NULL
            AND pa.\"ProductionGroup\" != ''
            AND pa.\"ProductionType\" IN ('CMT', 'In-house')
-           AND (pa.\"PLMId\" NOT IN (SELECT \"PLMId\" FROM plm_activity_shadowing) OR pa.\"ProductionGroup\" = ANY($1))
+           AND (pa.\"PLMId\" NOT IN (SELECT \"PLMId\" FROM plm_activity_shadowing) OR NOT (pa.\"ProductionGroup\" = ANY($1)))
          GROUP BY pa.\"PLMId\", pa.\"Brand\", pa.\"Season\", pa.\"ArticleName\", pa.\"ProductionGroup\", pa.\"ProductionType\"
 
          UNION ALL
@@ -944,13 +955,13 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
          LEFT JOIN production_groups pg ON pgl.\"ProductionGroup\" = pg.\"ProductionGroup\"
          LEFT JOIN po_headers ph ON pg.\"PONumber\" = ph.\"PurchaseOrderNumber\"
          WHERE (pgl.\"ProdStatus\" = 'StartedUp'
-                OR (pgl.\"ProdStatus\" IN ('ReportedFinished', 'Completed') AND pgl.\"ProductionGroup\" = ANY($1)))
+                OR (pgl.\"ProdStatus\" IN ('ReportedFinished', 'Completed') AND NOT (pgl.\"ProductionGroup\" = ANY($1))))
            AND pgl.\"ProductionGroup\" IS NOT NULL
            AND pgl.\"ProductionGroup\" != ''
            AND pgl.\"ProductionGroup\" NOT IN (SELECT DISTINCT \"ProductionGroup\" FROM plm_activity WHERE \"ProductionGroup\" IS NOT NULL)
          GROUP BY pgl.\"ProductionGroup\", pgl.\"ItemId\", pgl.\"SearchName\", pg.\"ProductionType\"
          ORDER BY \"ProductionGroup\" DESC",
-        &[&unsubmitted_groups]
+        &[&completed_groups]
     ).map_err(|e| format!("Failed to query active plm_activities: {}", e))?;
 
     for row in rows {
