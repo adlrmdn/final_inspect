@@ -954,7 +954,7 @@ pub fn get_active_plm_activities() -> Result<Vec<ActivePlmActivity>, String> {
          FROM production_group_lines pgl
          LEFT JOIN production_groups pg ON pgl.\"ProductionGroup\" = pg.\"ProductionGroup\"
          LEFT JOIN po_headers ph ON pg.\"PONumber\" = ph.\"PurchaseOrderNumber\"
-         WHERE (pgl.\"ProdStatus\" = 'StartedUp'
+         WHERE (pgl.\"ProdStatus\" IN ('Released', 'StartedUp')
                 OR (pgl.\"ProdStatus\" IN ('ReportedFinished', 'Completed') AND NOT (pgl.\"ProductionGroup\" = ANY($1))))
            AND pgl.\"ProductionGroup\" IS NOT NULL
            AND pgl.\"ProductionGroup\" != ''
