@@ -3274,9 +3274,29 @@ fn fetch_and_store_lines(
         ).map_err(|e| format!("Failed to delete existing report rows: {}", e))?;
     }
 
-    // 2. Filter duplicate size lines from D365, keeping only the latest record for each size
+    // 2. Group lines by size. D365 can carry more than one JobTransactionLinesDetails
+    // row for the same size on the same job (e.g. separate cutting batches/markers run
+    // on different days) — each row's good/reject quantities are that batch's own
+    // contribution, not a running total, so they must be summed across every row
+    // sharing a size. Keeping only one row (as this used to do, picking whichever row
+    // came last from D365) silently dropped every other batch's output — confirmed on
+    // MPG/JOB/2607/000428, where keeping only the "No=2" row left TotalGoodQty at
+    // 1028 instead of the true 2700 (No=1 + No=2 summed). Non-quantity fields
+    // (QtyOrder, Gramasi, item/line metadata) are constant per size across batch rows,
+    // so those are just taken from the last row seen, same as before.
     let mut unique_sizes = Vec::new();
     let mut latest_records = std::collections::HashMap::new();
+    let mut summed_good_qty: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_qty: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_produksi: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_finishing: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_embro: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_cutting: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_printing: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_sewing: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_reject_washing: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_barang_hilang: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut summed_total_qty_sample: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for (idx, rec) in records.iter().enumerate() {
         let size_val = rec["Size"].as_str().map(|s| s.trim().to_string()).unwrap_or_default();
         let size_key = if size_val.is_empty() {
@@ -3288,10 +3308,22 @@ fn fetch_and_store_lines(
         if !latest_records.contains_key(&size_key) {
             unique_sizes.push(size_key.clone());
         }
-        latest_records.insert(size_key, rec.clone());
+        latest_records.insert(size_key.clone(), rec.clone());
+
+        *summed_good_qty.entry(size_key.clone()).or_insert(0) += rec["TotalGoodQty"].as_i64().unwrap_or(0);
+        *summed_reject_qty.entry(size_key.clone()).or_insert(0) += rec["TotalRejectQty"].as_i64().unwrap_or(0);
+        *summed_reject_produksi.entry(size_key.clone()).or_insert(0) += rec["RejectProduksi"].as_i64().unwrap_or(0);
+        *summed_reject_finishing.entry(size_key.clone()).or_insert(0) += rec["RejectFinishing"].as_i64().unwrap_or(0);
+        *summed_reject_embro.entry(size_key.clone()).or_insert(0) += rec["RejectEmbro"].as_i64().unwrap_or(0);
+        *summed_reject_cutting.entry(size_key.clone()).or_insert(0) += rec["RejectCutting"].as_i64().unwrap_or(0);
+        *summed_reject_printing.entry(size_key.clone()).or_insert(0) += rec["RejectPrinting"].as_i64().unwrap_or(0);
+        *summed_reject_sewing.entry(size_key.clone()).or_insert(0) += rec["RejectSewing"].as_i64().unwrap_or(0);
+        *summed_reject_washing.entry(size_key.clone()).or_insert(0) += rec["RejectWashing"].as_i64().unwrap_or(0);
+        *summed_barang_hilang.entry(size_key.clone()).or_insert(0) += rec["BarangHilang"].as_i64().unwrap_or(0);
+        *summed_total_qty_sample.entry(size_key.clone()).or_insert(0) += rec["TotalQtySample"].as_i64().unwrap_or(0);
     }
 
-    // 3. Insert the deduplicated rows
+    // 3. Insert the per-size rows, with batch quantities summed
     for size_key in &unique_sizes {
         if let Some(rec) = latest_records.get(size_key) {
             let data_area_id = rec["dataAreaId"].as_str().map(|s| s.to_string());
@@ -3300,19 +3332,19 @@ fn fetch_and_store_lines(
             let item_id = rec["ItemId"].as_str().map(|s| s.to_string());
             let size_val = rec["Size"].as_str().map(|s| s.trim().to_string());
             let global_display_order = rec["GlobalDisplayOrder"].as_i64().map(|n| n as i32);
-            let reject_produksi = rec["RejectProduksi"].as_i64().map(|n| n as i32);
-            let reject_finishing = rec["RejectFinishing"].as_i64().map(|n| n as i32);
-            let reject_embro = rec["RejectEmbro"].as_i64().map(|n| n as i32);
+            let reject_produksi = summed_reject_produksi.get(size_key).map(|n| *n as i32);
+            let reject_finishing = summed_reject_finishing.get(size_key).map(|n| *n as i32);
+            let reject_embro = summed_reject_embro.get(size_key).map(|n| *n as i32);
             let qty_order = rec["QtyOrder"].as_i64().map(|n| n as i32);
-            let total_qty_sample = rec["TotalQtySample"].as_i64().map(|n| n as i32);
-            let barang_hilang = rec["BarangHilang"].as_i64().map(|n| n as i32);
-            let reject_cutting = rec["RejectCutting"].as_i64().map(|n| n as i32);
-            let total_reject_qty = rec["TotalRejectQty"].as_i64().map(|n| n as i32);
-            let reject_printing = rec["RejectPrinting"].as_i64().map(|n| n as i32);
+            let total_qty_sample = summed_total_qty_sample.get(size_key).map(|n| *n as i32);
+            let barang_hilang = summed_barang_hilang.get(size_key).map(|n| *n as i32);
+            let reject_cutting = summed_reject_cutting.get(size_key).map(|n| *n as i32);
+            let total_reject_qty = summed_reject_qty.get(size_key).map(|n| *n as i32);
+            let reject_printing = summed_reject_printing.get(size_key).map(|n| *n as i32);
             let ref_rec_id = rec["RefRecId"].as_i64();
-            let total_good_qty = rec["TotalGoodQty"].as_i64().map(|n| n as i32);
-            let reject_sewing = rec["RejectSewing"].as_i64().map(|n| n as i32);
-            let reject_washing = rec["RejectWashing"].as_i64().map(|n| n as i32);
+            let total_good_qty = summed_good_qty.get(size_key).map(|n| *n as i32);
+            let reject_sewing = summed_reject_sewing.get(size_key).map(|n| *n as i32);
+            let reject_washing = summed_reject_washing.get(size_key).map(|n| *n as i32);
             let gramasi = rec["Gramasi"].as_f64().or_else(|| rec["Gramasi"].as_i64().map(|n| n as f64));
             let btj = rec["BTJ"].as_i64().map(|n| n as i32);
             let reject_bahan = rec["RejectBahan"].as_i64().map(|n| n as i32);
