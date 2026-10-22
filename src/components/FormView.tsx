@@ -1641,10 +1641,33 @@ export default function FormView({
         setActivePackagingProject(refreshed);
         const updatedSes = refreshed.sessions?.find((s: any) => s.session_id === snapshotSessionId);
         if (updatedSes) {
-          setActiveSession(updatedSes);
-          if (updatedSes.report_lines && updatedSes.report_lines.length > 0) {
-            setSelectedSizeTab(updatedSes.report_lines[0].size_val || '');
-          }
+          // Only pull in ERP/baseline-sourced static fields (qty_order, item_id, etc.) —
+          // never replace the whole session. This button is meant to refresh the CMT-Cut
+          // baseline numbers from D365, but a wholesale setActiveSession(updatedSes) was
+          // overwriting session_qty/reject_* with whatever was last SAVED in the DB,
+          // silently discarding any in-progress, not-yet-saved entry the inspector just typed.
+          setActiveSession((prev: any) => {
+            if (!prev || prev.session_id !== updatedSes.session_id) return updatedSes;
+            const refreshedLinesById = new Map<string, any>(
+              (updatedSes.report_lines || []).map((l: any) => [l.report_id, l])
+            );
+            const mergedLines = (prev.report_lines || []).map((line: any) => {
+              const fresh = refreshedLinesById.get(line.report_id);
+              if (!fresh) return line;
+              return {
+                ...line,
+                qty_order: fresh.qty_order,
+                item_id: fresh.item_id,
+                data_area_id: fresh.data_area_id,
+                global_display_order: fresh.global_display_order,
+                gramasi: fresh.gramasi,
+                ref_rec_id: fresh.ref_rec_id,
+                line_no: fresh.line_no,
+                job_transaction_id: fresh.job_transaction_id,
+              };
+            });
+            return { ...prev, report_lines: mergedLines };
+          });
         }
       }
       await showProfessionalAlert('Data Refreshed', 'Project baseline cutting quantities and size templates have been updated from D365.', 'success');

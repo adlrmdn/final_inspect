@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getInspectorProfile } from '../../utils/inspector_profile';
+import { PackagingService } from '../../services/packaging_service';
 
 // Base URL of the verification web service. Customize this when deploying.
 const WEB_SERVICE_URL = 'https://vendor-portal.megaperintis.co.id';
@@ -79,6 +80,10 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
   const isStage3Done = directorSig.includes('Digitally Signed:');
   const isDirectorRejected = directorSig.includes('Rejected:');
   const isFullyVerified = isStage1Done && isStage2Done;
+  // Guard: an inspection must have an actual Pass/Fail call before it can be sent for
+  // approval — sending while the result is still "Pending" means nobody has decided
+  // the outcome yet, so there's nothing for the approver to actually sign off on.
+  const isResultDecided = !!(activeSession?.result && activeSession.result.toLowerCase() !== 'pending');
 
   // NOTE (dynamic verified_doc): the console no longer regenerates/uploads the
   // signed PDF when the HO signature appears. The portal re-renders the report
@@ -109,6 +114,18 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
 
     setIsSendingEmail(true);
     try {
+      // Persist the session's current report lines (and session fields) BEFORE generating
+      // the PDF below. isBalanceMatching only validated the in-memory draft against the
+      // cutting baseline — the PDF the recipient approves is rendered server-side from
+      // whatever is already SAVED in the DB. Without this, an in-progress/unsaved entry
+      // (e.g. a freshly typed session_qty) can pass the on-screen balance check yet still
+      // go out for approval against stale, unbalanced data that was never written through.
+      const sanitizedSession = PackagingService.getInstance().sanitizeSession(activeSession);
+      if (sanitizedSession.report_lines && sanitizedSession.report_lines.length > 0) {
+        await invoke('save_packaging_project_reports', { reports: sanitizedSession.report_lines });
+      }
+      await invoke('save_packaging_session', { session: sanitizedSession });
+
       // Generate a secure single-use UUID token for the Approve/Reject links. This is only
       // persisted to the DB (which resets the whole approval chain and flips the UI into
       // "awaiting approval") once the email has actually been dispatched successfully —
@@ -674,7 +691,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                   </button>
                 );
               } else if (isRejected && activeSession && activePackagingProject.status !== 'completed') {
-                const canResend = isOnline && isBalanceMatching && !isProcessing;
+                const canResend = isOnline && isBalanceMatching && isResultDecided && !isProcessing;
                 return (
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
                     <button
@@ -686,7 +703,7 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                         setSubjectInput(`[Inspection Report] ${activePackagingProject.article_name} - Version ${getCycleName(activeSession.cycle_number)}`);
                         setIsSendEmailOpen(true);
                       }}
-                      title={!isOnline ? 'You must be online to re-verify.' : !isBalanceMatching ? 'Balance must match cutting qty to verify.' : undefined}
+                      title={!isOnline ? 'You must be online to re-verify.' : !isBalanceMatching ? 'Balance must match cutting qty to verify.' : !isResultDecided ? 'Set the result to Passed or Failed before verifying.' : undefined}
                       style={{
                         height: '32px',
                         boxSizing: 'border-box',
@@ -720,31 +737,31 @@ export const WorkspaceControls: React.FC<WorkspaceControlsProps> = ({
                   <button
                     type="button"
                     className="btn-electric-outline"
-                    disabled={!isOnline || !isBalanceMatching || isProcessing}
+                    disabled={!isOnline || !isBalanceMatching || !isResultDecided || isProcessing}
                     onClick={() => {
                       setRecipientInput('');
                       setSubjectInput(`[Inspection Report] ${activePackagingProject.article_name} - Version ${getCycleName(activeSession.cycle_number)}`);
                       setIsSendEmailOpen(true);
                     }}
-                    title={!isOnline ? 'You must be online to verify.' : !isBalanceMatching ? 'Balance must match cutting qty (cutting = good + reject) to verify.' : undefined}
+                    title={!isOnline ? 'You must be online to verify.' : !isBalanceMatching ? 'Balance must match cutting qty (cutting = good + reject) to verify.' : !isResultDecided ? 'Set the result to Passed or Failed before verifying.' : undefined}
                     style={{
                       height: '32px',
                       boxSizing: 'border-box',
                       width: 'auto',
                       padding: '0 0.85rem',
                       fontSize: '0.72rem',
-                      color: (!isOnline || !isBalanceMatching || isProcessing) ? 'var(--text-muted)' : 'var(--royal-blue)',
-                      borderColor: (!isOnline || !isBalanceMatching || isProcessing) ? 'rgba(15, 23, 42, 0.16)' : 'rgba(37, 99, 235, 0.28)',
-                      background: (!isOnline || !isBalanceMatching || isProcessing) ? 'rgba(15, 23, 42, 0.04)' : 'rgba(37, 99, 235, 0.05)',
+                      color: (!isOnline || !isBalanceMatching || !isResultDecided || isProcessing) ? 'var(--text-muted)' : 'var(--royal-blue)',
+                      borderColor: (!isOnline || !isBalanceMatching || !isResultDecided || isProcessing) ? 'rgba(15, 23, 42, 0.16)' : 'rgba(37, 99, 235, 0.28)',
+                      background: (!isOnline || !isBalanceMatching || !isResultDecided || isProcessing) ? 'rgba(15, 23, 42, 0.04)' : 'rgba(37, 99, 235, 0.05)',
                       fontWeight: 800,
                       borderRadius: '10px',
-                      cursor: (!isOnline || !isBalanceMatching || isProcessing) ? 'not-allowed' : 'pointer',
+                      cursor: (!isOnline || !isBalanceMatching || !isResultDecided || isProcessing) ? 'not-allowed' : 'pointer',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       lineHeight: '1',
                       gap: '0.25rem',
-                      opacity: (!isOnline || !isBalanceMatching || isProcessing) ? 0.5 : 1,
+                      opacity: (!isOnline || !isBalanceMatching || !isResultDecided || isProcessing) ? 0.5 : 1,
                     }}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
