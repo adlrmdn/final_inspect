@@ -2,6 +2,10 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.4.1]
+
+- Fix: when a second production group merges onto an existing project (see 1.4.0's `packaging_project_group_links`), its CMT-Cut/CMT-Pak baseline lines were never seeded at all — gated on "has this project ever been seeded", which was already true from the first group — so the merged project's "Qty Cut" baseline and the `job_trans_raf` payload's size list only ever reflected the first group, silently dropping the second group's quantities. `seed_baseline_sessions()` (extracted from `save_packaging_project`) now re-runs on every save and sums `qty_order` across every production group's rows; `fetch_and_store_lines()`'s delete-before-insert is now scoped per job transaction so re-seeding one group's lines can no longer wipe another group's.
+
 ## [1.4.0]
 
 - Feature: a production group pinned as an "extra" group on the vendor portal's SubconOrder (e.g. a second cutting batch for the same PO) now resolves to the SAME `packaging_projects` row as its primary group (`packaging_project_group_links`, portal-written), instead of becoming a second, independent project — one inspection, one approval chain, one invoice/deduction RPA job per PO.

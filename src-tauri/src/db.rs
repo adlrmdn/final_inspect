@@ -1199,6 +1199,128 @@ pub fn update_packaging_project_deductions(project_id: &str, has_deduction: bool
     Ok(())
 }
 
+/// Recomputes Session 0's ("BASE-{project_id}") baseline quantity from the SUM
+/// of every `qty_order` row currently stored for this project (session_id IS
+/// NULL), and (re-)seeds Session 1 ("Pre Final") to match. Extracted out of
+/// save_packaging_project() so it can run on EVERY save, not only a brand-new
+/// project's first one — a merged project (packaging_project_group_links) adds
+/// a second production group's rows well after Session 0/1 already exist for
+/// the first group, and the baseline qty must reflect their SUM, not just
+/// whichever group was downloaded first.
+///
+/// Every step here is independently safe to re-run: the Session 0/1 upserts are
+/// plain UPSERTs, and the Session-1 report-line mirror is filtered to only the
+/// job transactions not already mirrored in (keyed by job_transaction_id+size,
+/// not row_number(), so it can't collide with rows an earlier call already
+/// inserted).
+///
+/// `po_qty_fallback` is used only if the SUM comes back 0 (no qty_order rows
+/// yet at all).
+fn seed_baseline_sessions(client: &mut postgres::Client, project_id: &str, po_qty_fallback: f64) -> Result<(), String> {
+    // 1. Calculate aggregated values from OData details stored in packaging_project_reports
+    let mut total_order_qty = po_qty_fallback as i32;
+
+    // Query CMT-Cut lines (session_id IS NULL) to resolve total_order_qty
+    if let Ok(rows) = client.query(
+        "SELECT COALESCE(SUM(qty_order), 0)::int4
+         FROM packaging_project_reports
+         WHERE project_id = $1 AND session_id IS NULL",
+        &[&project_id]
+    ) {
+        if let Some(row) = rows.first() {
+            let order_sum: i32 = row.get(0);
+            if order_sum > 0 {
+                total_order_qty = order_sum;
+            }
+        }
+    }
+
+    let cutting_pcs = 0;
+    let packing_pcs = 0;
+    let sewing_pcs = 0;
+    let finishing_pcs = 0;
+
+    // 2. UPSERT Session 0 (Baseline)
+    let session_0_id = format!("BASE-{}", project_id);
+    client.execute(
+        "INSERT INTO packaging_project_sessions (
+            session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
+            inspection_date, check_wash, check_style_as_sample, check_main_label, check_flag_fit_label,
+            check_print_embro_artwork, check_hangtag, check_waist_tag, check_barcode, check_packing_list,
+            check_shipping_mark, qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
+            finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
+            version, result
+         )
+         VALUES ($1, $2, 0, 'system', 'completed', NOW(), NOW(), CURRENT_DATE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, $3, $3, $3, $4, $5, $6, $7, 0, 2.5, 1.0, 'System Baseline', 'System (CMT-Cut)', 'Baseline', 'Passed')
+         ON CONFLICT (session_id) DO UPDATE SET
+            qty_available = $3, total_store = $3, store_inspected = $3, cutting_pcs = $4, sewing_pcs = $5, finishing_pcs = $6, packing_pcs = $7",
+        &[
+            &session_0_id,
+            &project_id,
+            &total_order_qty,
+            &cutting_pcs,
+            &sewing_pcs,
+            &finishing_pcs,
+            &packing_pcs
+        ]
+    ).map_err(|e| format!("Failed to seed Session 0: {}", e))?;
+
+    // 3. UPSERT Session 1 (Pre Final)
+    let session_1_id = format!("SES-{}-1", project_id);
+    client.execute(
+        "INSERT INTO packaging_project_sessions (
+            session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
+            inspection_date, check_wash, check_style_as_sample, check_main_label, check_flag_fit_label,
+            check_print_embro_artwork, check_hangtag, check_waist_tag, check_barcode, check_packing_list,
+            check_shipping_mark, qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
+            finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
+            version, result
+         )
+         VALUES ($1, $2, 1, 'inspector-1', 'pending', NOW(), NULL, CURRENT_DATE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, $3, 0, 0, $4, $5, $6, $7, 0, 2.5, 1.0, NULL, NULL, 'v1.0', 'Pending')
+         ON CONFLICT (session_id) DO NOTHING",
+        &[
+            &session_1_id,
+            &project_id,
+            &total_order_qty,
+            &cutting_pcs,
+            &sewing_pcs,
+            &finishing_pcs,
+            &packing_pcs
+        ]
+    ).map_err(|e| format!("Failed to seed Session 1: {}", e))?;
+
+    // 4. Duplicate INITIAL_PAK lines into Session 1 report lines, incrementally.
+    client.execute(
+        "INSERT INTO packaging_project_reports (
+            report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
+            item_id, size_val, global_display_order, reject_produksi, reject_finishing,
+            reject_embro, qty_order, total_qty_sample, barang_hilang, reject_cutting,
+            total_reject_qty, reject_printing, ref_rec_id, total_good_qty, reject_sewing,
+            reject_washing, gramasi, btj, reject_bahan, session_qty, session_version, created_at
+         )
+         SELECT
+            $1 || '_LINE_' || COALESCE(job_transaction_id, 'job') || '_' || COALESCE(size_val, 'size'),
+            $1,
+            project_id, data_area_id, line_no, job_transaction_id,
+            item_id, size_val, global_display_order, 0, 0,
+            0, qty_order, total_qty_sample, 0, 0,
+            total_reject_qty, 0, ref_rec_id, total_good_qty, 0,
+            0, gramasi, 0, 0, 0.0, 'v1.0', NOW()
+         FROM packaging_project_reports src
+         WHERE src.project_id = $2 AND src.session_id = 'INITIAL_PAK'
+           AND NOT EXISTS (
+               SELECT 1 FROM packaging_project_reports existing
+               WHERE existing.project_id = $2 AND existing.session_id = $1
+                 AND existing.job_transaction_id IS NOT DISTINCT FROM src.job_transaction_id
+                 AND existing.size_val IS NOT DISTINCT FROM src.size_val
+           )
+         ON CONFLICT (report_id) DO NOTHING",
+        &[&session_1_id, &project_id]
+    ).map_err(|e| format!("Failed to duplicate INITIAL_PAK lines to Session 1: {}", e))?;
+
+    Ok(())
+}
+
 pub fn save_packaging_project(project: PackagingProject) -> Result<String, String> {
     ensure_init();
     let mut client = get_connection_qms()?;
@@ -1398,24 +1520,44 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
         &[&project_id, &canonical_pg],
     );
 
-    // 3. Seed detail lines (if not already present)
-    let initial_pak_count: i64 = client.query_one(
-        "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = 'INITIAL_PAK'",
-        &[&project_id]
-    ).map(|r| r.get(0)).unwrap_or(0);
+    // 3. Seed detail lines (if not already present) — checked PER JOB, not per
+    // project: a merged project (packaging_project_group_links) can go through
+    // this more than once, once for each production group's own D365 job
+    // transaction, and each one's lines must get seeded the first time THAT job
+    // is seen, not only the project's very first download. fetch_and_store_lines
+    // itself deletes/reinserts scoped to (project, session, job_transaction_id),
+    // so re-seeding one job never touches another job's already-stored rows.
+    let cut_already_seeded = match &final_cut_job {
+        Some(cut_id) => client.query_one(
+            "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL AND job_transaction_id = $2",
+            &[&project_id, cut_id],
+        ).map(|r| r.get::<_, i64>(0) > 0).unwrap_or(false),
+        None => true, // nothing to seed
+    };
+    let pak_already_seeded = match &final_pak_job {
+        Some(pak_id) => client.query_one(
+            "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = 'INITIAL_PAK' AND job_transaction_id = $2",
+            &[&project_id, pak_id],
+        ).map(|r| r.get::<_, i64>(0) > 0).unwrap_or(false),
+        None => true,
+    };
 
-    if initial_pak_count == 0 {
+    if !cut_already_seeded || !pak_already_seeded {
         let mut seeded_from_erp = false;
         // Fetch and seed CMT-Cut lines
-        if let Some(ref cut_id) = final_cut_job {
-            if fetch_and_store_lines(&creds, &token, &mut client, &project_id, cut_id, None).is_ok() {
-                seeded_from_erp = true;
+        if !cut_already_seeded {
+            if let Some(ref cut_id) = final_cut_job {
+                if fetch_and_store_lines(&creds, &token, &mut client, &project_id, cut_id, None).is_ok() {
+                    seeded_from_erp = true;
+                }
             }
         }
         // Fetch and seed CMT-Pak lines
-        if let Some(ref pak_id) = final_pak_job {
-            if fetch_and_store_lines(&creds, &token, &mut client, &project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
-                seeded_from_erp = true;
+        if !pak_already_seeded {
+            if let Some(ref pak_id) = final_pak_job {
+                if fetch_and_store_lines(&creds, &token, &mut client, &project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
+                    seeded_from_erp = true;
+                }
             }
         }
 
@@ -1516,110 +1658,14 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
         }
     }
 
-    // Seed Session 0 and Session 1 only for new projects — existing projects already have these seeded
-    if existing_project_id.is_none() {
-    // 1. Calculate aggregated values from OData details stored in packaging_project_reports
-    let mut total_order_qty = project.po_qty.unwrap_or(0.0) as i32;
-    
-    // Query CMT-Cut lines (session_id IS NULL) to resolve total_order_qty
-    if let Ok(rows) = client.query(
-        "SELECT COALESCE(SUM(qty_order), 0)::int4
-         FROM packaging_project_reports 
-         WHERE project_id = $1 AND session_id IS NULL",
-        &[&project_id]
-    ) {
-        if let Some(row) = rows.first() {
-            let order_sum: i32 = row.get(0);
-            if order_sum > 0 {
-                total_order_qty = order_sum;
-            }
-        }
-    }
-    
-    let cutting_pcs = 0;
-    let packing_pcs = 0;
-    let sewing_pcs = 0;
-    let finishing_pcs = 0;
-
-    // 2. UPSERT Session 0 (Baseline)
-    let session_0_id = format!("BASE-{}", project_id);
-    client.execute(
-        "INSERT INTO packaging_project_sessions (
-            session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
-            inspection_date, check_wash, check_style_as_sample, check_main_label, check_flag_fit_label,
-            check_print_embro_artwork, check_hangtag, check_waist_tag, check_barcode, check_packing_list,
-            check_shipping_mark, qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
-            finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
-            version, result
-         )
-         VALUES ($1, $2, 0, 'system', 'completed', NOW(), NOW(), CURRENT_DATE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, $3, $3, $3, $4, $5, $6, $7, 0, 2.5, 1.0, 'System Baseline', 'System (CMT-Cut)', 'Baseline', 'Passed')
-         ON CONFLICT (session_id) DO UPDATE SET
-            qty_available = $3, total_store = $3, store_inspected = $3, cutting_pcs = $4, sewing_pcs = $5, finishing_pcs = $6, packing_pcs = $7",
-        &[
-            &session_0_id,
-            &project_id,
-            &total_order_qty,
-            &cutting_pcs,
-            &sewing_pcs,
-            &finishing_pcs,
-            &packing_pcs
-        ]
-    ).map_err(|e| format!("Failed to seed Session 0: {}", e))?;
-
-    // 3. UPSERT Session 1 (Pre Final)
-    let session_1_id = format!("SES-{}-1", project_id);
-    client.execute(
-        "INSERT INTO packaging_project_sessions (
-            session_id, project_id, cycle_number, inspector_id, status, started_at, ended_at,
-            inspection_date, check_wash, check_style_as_sample, check_main_label, check_flag_fit_label,
-            check_print_embro_artwork, check_hangtag, check_waist_tag, check_barcode, check_packing_list,
-            check_shipping_mark, qty_available, total_store, store_inspected, cutting_pcs, sewing_pcs,
-            finishing_pcs, packing_pcs, sampling_pcs, aql, level_val, factory_representative, inspector,
-            version, result
-         )
-         VALUES ($1, $2, 1, 'inspector-1', 'pending', NOW(), NULL, CURRENT_DATE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, $3, 0, 0, $4, $5, $6, $7, 0, 2.5, 1.0, NULL, NULL, 'v1.0', 'Pending')
-         ON CONFLICT (session_id) DO NOTHING",
-        &[
-            &session_1_id,
-            &project_id,
-            &total_order_qty,
-            &cutting_pcs,
-            &sewing_pcs,
-            &finishing_pcs,
-            &packing_pcs
-        ]
-    ).map_err(|e| format!("Failed to seed Session 1: {}", e))?;
-
-    // 4. Duplicate INITIAL_PAK lines into Session 1 report lines if they don't exist
-    let existing_lines_count: i64 = client.query_one(
-        "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
-        &[&project_id, &session_1_id]
-    ).map(|r| r.get(0)).unwrap_or(0);
-    
-    if existing_lines_count == 0 {
-        client.execute(
-            "INSERT INTO packaging_project_reports (
-                report_id, session_id, project_id, data_area_id, line_no, job_transaction_id,
-                item_id, size_val, global_display_order, reject_produksi, reject_finishing,
-                reject_embro, qty_order, total_qty_sample, barang_hilang, reject_cutting,
-                total_reject_qty, reject_printing, ref_rec_id, total_good_qty, reject_sewing,
-                reject_washing, gramasi, btj, reject_bahan, session_qty, session_version, created_at
-             )
-             SELECT 
-                $1 || '_LINE_' || (row_number() OVER (ORDER BY line_no ASC, global_display_order ASC))::text, 
-                $1, 
-                project_id, data_area_id, line_no, job_transaction_id,
-                item_id, size_val, global_display_order, 0, 0,
-                0, qty_order, total_qty_sample, 0, 0,
-                total_reject_qty, 0, ref_rec_id, total_good_qty, 0,
-                0, gramasi, 0, 0, 0.0, 'v1.0', NOW()
-             FROM packaging_project_reports
-             WHERE project_id = $2 AND session_id = 'INITIAL_PAK'",
-            &[&session_1_id, &project_id]
-        ).map_err(|e| format!("Failed to duplicate INITIAL_PAK lines to Session 1: {}", e))?;
-    }
-
-    } // end: new project seeding block
+    // Recompute Session 0's baseline qty + (re-)seed Session 1 on EVERY save, not
+    // just a brand-new project's first one: a merged project (see
+    // packaging_project_group_links) can have a second production group's lines
+    // land here well after Session 0/1 already existed for the first group, and
+    // total_order_qty must reflect the SUM across every group's rows, not just
+    // whichever was downloaded first. See seed_baseline_sessions() — every step
+    // in it is independently safe to re-run.
+    seed_baseline_sessions(&mut client, &project_id, project.po_qty.unwrap_or(0.0))?;
 
     // RPA queueing moved to the portal's approval chain (Director workflow):
     // job_trans_raf is queued when MD Production approves, invoice/deduction
@@ -3324,16 +3370,22 @@ fn fetch_and_store_lines(
     // replace them.
     let mut tx = qms_client.transaction().map_err(|e| format!("Failed to start transaction: {}", e))?;
 
-    // 1. Delete existing report lines for this project and session to prevent duplicate/stale records
+    // 1. Delete existing report lines for this project/session AND job — scoped to
+    // job_transaction_id too, not just project+session, because a merged project
+    // (see packaging_project_group_links) can hold rows from more than one D365
+    // job transaction (one per production group under the same PO). Without this,
+    // re-seeding group B's lines (even under the shared sentinel session_id
+    // 'INITIAL_PAK') would delete group A's already-stored rows instead of only
+    // replacing its own.
     if let Some(sess_id) = session_id {
         tx.execute(
-            "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
-            &[&project_id, &sess_id]
+            "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2 AND job_transaction_id = $3",
+            &[&project_id, &sess_id, &target_job_id]
         ).map_err(|e| format!("Failed to delete existing report rows: {}", e))?;
     } else {
         tx.execute(
-            "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL",
-            &[&project_id]
+            "DELETE FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL AND job_transaction_id = $2",
+            &[&project_id, &target_job_id]
         ).map_err(|e| format!("Failed to delete existing report rows: {}", e))?;
     }
 
@@ -3989,6 +4041,140 @@ mod tests {
         assert_eq!(active_after_primary, Some(primary_pg.clone()), "active_production_group must switch back to the primary group once it's the latest download");
         assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test project row");
         assert!(cleanup_link.is_ok() && cleanup_link.unwrap() >= 1, "cleanup failed to remove the test link row");
+    }
+
+    #[test]
+    fn test_seed_baseline_sessions_combines_two_groups_live() {
+        // Proves the "qty cut" fix: seed_baseline_sessions() must SUM qty_order
+        // across every production group's rows (baseline session_id IS NULL /
+        // 'INITIAL_PAK' rows), not just whichever group was seeded first, and the
+        // Session-1 mirror must pick up a later group's rows too without
+        // re-inserting (and so duplicating) the first group's.
+        let _ = dotenvy::from_filename(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let project_id = format!("TEST_QTYCOMBINE_PROJECT_{}", nonce);
+
+        let mut client = get_connection_qms().expect("QMS connection failed");
+
+        client
+            .execute(
+                "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, status, has_deduction, deduction_amount, created_at, updated_at)
+                 VALUES ($1, 'TEST_PLM', 'Minimal', 'FALL-26', 'TEST ARTICLE - DO NOT USE', 'TEST_PRG_QTYCOMBINE', 'downloaded', false, 0.0, NOW(), NOW())",
+                &[&project_id],
+            )
+            .expect("Failed to seed test project");
+
+        // Group A's baseline rows: cut job A, sizes S(100)+M(200) = 300 total;
+        // pak job A mirrors the same sizes/qty.
+        for (report_suffix, session_id, job_id, size, qty) in [
+            ("A_CUT_S", None::<&str>, "TEST_JOB_CUT_A", "S", 100),
+            ("A_CUT_M", None::<&str>, "TEST_JOB_CUT_A", "M", 200),
+            ("A_PAK_S", Some("INITIAL_PAK"), "TEST_JOB_PAK_A", "S", 100),
+            ("A_PAK_M", Some("INITIAL_PAK"), "TEST_JOB_PAK_A", "M", 200),
+        ] {
+            let report_id = format!("{}_{}", project_id, report_suffix);
+            client
+                .execute(
+                    "INSERT INTO packaging_project_reports (report_id, session_id, project_id, job_transaction_id, size_val, qty_order, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW())",
+                    &[&report_id, &session_id, &project_id, &job_id, &size, &qty],
+                )
+                .expect("Failed to seed group A report row");
+        }
+
+        seed_baseline_sessions(&mut client, &project_id, 0.0).expect("seed_baseline_sessions failed for group A");
+
+        let session_0_id = format!("BASE-{}", project_id);
+        let session_1_id = format!("SES-{}-1", project_id);
+
+        let qty_after_a: i32 = client
+            .query_one(
+                "SELECT qty_available FROM packaging_project_sessions WHERE session_id = $1",
+                &[&session_0_id],
+            )
+            .map(|r| r.get(0))
+            .expect("Failed to read Session 0 after group A");
+
+        let session1_lines_after_a: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
+                &[&project_id, &session_1_id],
+            )
+            .map(|r| r.get(0))
+            .unwrap_or(0);
+
+        // Group B's baseline rows: a DIFFERENT job (a second production group
+        // merged onto the same project/PO), sizes S(50)+L(70) = 120 total.
+        for (report_suffix, session_id, job_id, size, qty) in [
+            ("B_CUT_S", None::<&str>, "TEST_JOB_CUT_B", "S", 50),
+            ("B_CUT_L", None::<&str>, "TEST_JOB_CUT_B", "L", 70),
+            ("B_PAK_S", Some("INITIAL_PAK"), "TEST_JOB_PAK_B", "S", 50),
+            ("B_PAK_L", Some("INITIAL_PAK"), "TEST_JOB_PAK_B", "L", 70),
+        ] {
+            let report_id = format!("{}_{}", project_id, report_suffix);
+            client
+                .execute(
+                    "INSERT INTO packaging_project_reports (report_id, session_id, project_id, job_transaction_id, size_val, qty_order, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, NOW())",
+                    &[&report_id, &session_id, &project_id, &job_id, &size, &qty],
+                )
+                .expect("Failed to seed group B report row");
+        }
+
+        seed_baseline_sessions(&mut client, &project_id, 0.0).expect("seed_baseline_sessions failed for group B");
+
+        let qty_after_b: i32 = client
+            .query_one(
+                "SELECT qty_available FROM packaging_project_sessions WHERE session_id = $1",
+                &[&session_0_id],
+            )
+            .map(|r| r.get(0))
+            .expect("Failed to read Session 0 after group B");
+
+        let session1_lines_after_b: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
+                &[&project_id, &session_1_id],
+            )
+            .map(|r| r.get(0))
+            .unwrap_or(0);
+
+        // Re-run for group A again (simulating a re-download/refresh of the
+        // already-seeded group) — must NOT change the combined total or
+        // duplicate Session 1's lines.
+        seed_baseline_sessions(&mut client, &project_id, 0.0).expect("seed_baseline_sessions failed on group A re-run");
+
+        let qty_after_a_rerun: i32 = client
+            .query_one(
+                "SELECT qty_available FROM packaging_project_sessions WHERE session_id = $1",
+                &[&session_0_id],
+            )
+            .map(|r| r.get(0))
+            .expect("Failed to read Session 0 after re-run");
+
+        let session1_lines_after_rerun: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM packaging_project_reports WHERE project_id = $1 AND session_id = $2",
+                &[&project_id, &session_1_id],
+            )
+            .map(|r| r.get(0))
+            .unwrap_or(0);
+
+        let cleanup = client.execute(
+            "DELETE FROM packaging_projects WHERE project_id = $1",
+            &[&project_id],
+        );
+
+        assert_eq!(qty_after_a, 300, "Session 0 qty_available must be group A's total (100+200) after only group A is seeded");
+        assert_eq!(session1_lines_after_a, 2, "Session 1 must mirror group A's 2 INITIAL_PAK size rows");
+        assert_eq!(qty_after_b, 420, "Session 0 qty_available must be BOTH groups combined (300+120) after group B is seeded");
+        assert_eq!(session1_lines_after_b, 4, "Session 1 must now mirror all 4 size rows across both groups, not just the latest");
+        assert_eq!(qty_after_a_rerun, 420, "re-seeding group A again must not change the already-combined total");
+        assert_eq!(session1_lines_after_rerun, 4, "re-seeding group A again must not duplicate Session 1's already-mirrored lines");
+        assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test project row");
     }
 
     #[test]
