@@ -2941,12 +2941,29 @@ pub fn save_project_verification_doc(project_id: &str, doc_base64: &str) -> Resu
 pub fn refresh_packaging_project_lines(project_id: &str) -> Result<(), String> {
     let mut client = get_connection_qms()?;
 
-    // 1. Retrieve project header to get production group
+    // 1. Retrieve project header to get the (canonical/primary) production group
     let row = client.query_one(
         "SELECT production_group FROM packaging_projects WHERE project_id = $1",
         &[&project_id]
     ).map_err(|e| format!("Failed to find project: {}", e))?;
     let prod_group: String = row.get(0);
+
+    // Resolve every production group feeding this project — the primary one plus
+    // any extra group merged onto it (see packaging_project_group_links /
+    // resolve_canonical_production_group). Before this, "Sync D365" only ever
+    // refreshed the primary group's own job transaction, and the cleanup step
+    // below deleted every OTHER job's rows as "stale" — which silently wiped a
+    // merged second group's lines every time someone clicked Sync D365.
+    let mut all_groups = vec![prod_group.clone()];
+    if let Ok(rows) = client.query(
+        "SELECT production_group FROM packaging_project_group_links WHERE primary_production_group = $1",
+        &[&prod_group],
+    ) {
+        for r in rows {
+            let pg: String = r.get(0);
+            all_groups.push(pg);
+        }
+    }
 
     // 2. Fetch credentials and token
     let creds = get_d365_creds()
@@ -2954,46 +2971,78 @@ pub fn refresh_packaging_project_lines(project_id: &str) -> Result<(), String> {
     let token = get_d365_token(&creds)
         .map_err(|e| format!("Failed to fetch token: {}", e))?;
 
-    // 3. Query JobTransactionHeaders for latest job ids
-    let filter_str = format!("ProductionGroup eq '{}'", prod_group);
-    let encoded_filter = percent_encode(&filter_str);
-    let headers_url = format!("{}/data/JobTransactionHeaders?$filter={}", creds.resource, encoded_filter);
+    // 3. For EACH group, resolve its own latest cut/pak job ids from D365. Every
+    // group's current job id is kept in valid_job_ids so the cleanup step only
+    // ever purges a genuinely stale/reissued job, never another group's current one.
+    let mut valid_job_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut primary_cut_job: Option<String> = None;
+    let mut primary_pak_job: Option<String> = None;
+    let mut any_fetched = false;
 
-    let mut cut_job_id = None;
-    let mut cut_created = String::new();
-    let mut pak_job_id = None;
-    let mut pak_created = String::new();
+    let mut qms_client = get_connection_qms()?;
 
-    match call_curl_get(&headers_url, &token) {
-        Ok(resp) => {
-            if let Some(records) = resp["value"].as_array() {
-                for rec in records {
-                    let op = rec["Operation"].as_str().unwrap_or("");
-                    let job_id = rec["JobTransactionId"].as_str().map(|s| s.to_string());
-                    let created_str = rec["CreatedDateTime1"].as_str().unwrap_or("");
-                    let op_upper = op.to_uppercase();
-                    if op_upper == "CMT-CUT" {
-                        if cut_job_id.is_none() || created_str > cut_created.as_str() {
-                            cut_job_id = job_id;
-                            cut_created = created_str.to_string();
+    for group in &all_groups {
+        let filter_str = format!("ProductionGroup eq '{}'", group);
+        let encoded_filter = percent_encode(&filter_str);
+        let headers_url = format!("{}/data/JobTransactionHeaders?$filter={}", creds.resource, encoded_filter);
+
+        let mut cut_job_id = None;
+        let mut cut_created = String::new();
+        let mut pak_job_id = None;
+        let mut pak_created = String::new();
+
+        match call_curl_get(&headers_url, &token) {
+            Ok(resp) => {
+                if let Some(records) = resp["value"].as_array() {
+                    for rec in records {
+                        let op = rec["Operation"].as_str().unwrap_or("");
+                        let job_id = rec["JobTransactionId"].as_str().map(|s| s.to_string());
+                        let created_str = rec["CreatedDateTime1"].as_str().unwrap_or("");
+                        let op_upper = op.to_uppercase();
+                        if op_upper == "CMT-CUT" {
+                            if cut_job_id.is_none() || created_str > cut_created.as_str() {
+                                cut_job_id = job_id;
+                                cut_created = created_str.to_string();
+                            }
+                        } else if op_upper == "CMT-PAK" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
+                            pak_job_id = job_id;
+                            pak_created = created_str.to_string();
                         }
-                    } else if op_upper == "CMT-PAK" && (pak_job_id.is_none() || created_str > pak_created.as_str()) {
-                        pak_job_id = job_id;
-                        pak_created = created_str.to_string();
                     }
+                } else if let Some(err_msg) = resp["error"]["message"].as_str() {
+                    println!("Warning: refresh_packaging_project_lines - Dynamics 365 OData error for {}: {}", group, err_msg);
+                } else {
+                    println!("Warning: refresh_packaging_project_lines - response value is not an array for {}: {:?}", group, resp);
                 }
-            } else if let Some(err_msg) = resp["error"]["message"].as_str() {
-                println!("Warning: refresh_packaging_project_lines - Dynamics 365 OData error: {}", err_msg);
-            } else {
-                println!("Warning: refresh_packaging_project_lines - response value is not an array: {:?}", resp);
+            }
+            Err(e) => {
+                println!("Warning: refresh_packaging_project_lines - Failed to query JobTransactionHeaders for {}: {}", group, e);
             }
         }
-        Err(e) => {
-            println!("Warning: refresh_packaging_project_lines - Failed to query JobTransactionHeaders: {}", e);
+
+        if let Some(ref cut_id) = cut_job_id {
+            valid_job_ids.insert(cut_id.clone());
+            if fetch_and_store_lines(&creds, &token, &mut qms_client, project_id, cut_id, None).is_ok() {
+                any_fetched = true;
+            }
+        }
+        if let Some(ref pak_id) = pak_job_id {
+            valid_job_ids.insert(pak_id.clone());
+            if fetch_and_store_lines(&creds, &token, &mut qms_client, project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
+                any_fetched = true;
+            }
+        }
+
+        if group == &prod_group {
+            primary_cut_job = cut_job_id;
+            primary_pak_job = pak_job_id;
         }
     }
 
-    // 4. Update the job IDs in packaging_projects only if we found any in ERP, or keep the existing ones
+    seed_baseline_sessions(&mut qms_client, project_id, 0.0)?;
+
+    // 4. Update the project's own job IDs (primary group only — matches the
+    // single-column schema) only if we found one in ERP, else keep the existing.
     let existing_row = client.query_one(
         "SELECT cmt_cut_job_id, cmt_pak_job_id FROM packaging_projects WHERE project_id = $1",
         &[&project_id]
@@ -3001,49 +3050,34 @@ pub fn refresh_packaging_project_lines(project_id: &str) -> Result<(), String> {
     let existing_cut: Option<String> = existing_row.get(0);
     let existing_pak: Option<String> = existing_row.get(1);
 
-    let final_cut_job = cut_job_id.or(existing_cut);
-    let final_pak_job = pak_job_id.or(existing_pak);
+    let final_cut_job = primary_cut_job.or(existing_cut);
+    let final_pak_job = primary_pak_job.or(existing_pak);
 
     client.execute(
-        "UPDATE packaging_projects 
-         SET cmt_cut_job_id = $1, cmt_pak_job_id = $2, updated_at = NOW() 
+        "UPDATE packaging_projects
+         SET cmt_cut_job_id = $1, cmt_pak_job_id = $2, updated_at = NOW()
          WHERE project_id = $3",
         &[&final_cut_job, &final_pak_job, &project_id]
     ).map_err(|e| format!("Failed to update project job IDs: {}", e))?;
 
-    // 5. Fetch and store the new baseline/template lines first
-    let mut qms_client = get_connection_qms()?;
-    let mut fetched_cut = false;
-    let mut fetched_pak = false;
-
-    if let Some(ref cut_id) = final_cut_job {
-        if fetch_and_store_lines(&creds, &token, &mut qms_client, project_id, cut_id, None).is_ok() {
-            fetched_cut = true;
+    // Only delete old reports if we successfully fetched at least one group's new
+    // ones — and only ones that aren't ANY group's current valid job (so a merged
+    // second group's rows are never treated as stale just because they don't
+    // belong to the primary group).
+    if any_fetched {
+        if !valid_job_ids.is_empty() {
+            let placeholders: Vec<String> = (2..=valid_job_ids.len() + 1).map(|i| format!("${}", i)).collect();
+            let delete_query = format!(
+                "DELETE FROM packaging_project_reports WHERE project_id = $1 AND (session_id IS NULL OR session_id = 'INITIAL_PAK') AND job_transaction_id NOT IN ({})",
+                placeholders.join(", ")
+            );
+            let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![&project_id];
+            let job_ids_vec: Vec<&String> = valid_job_ids.iter().collect();
+            for j in &job_ids_vec {
+                params.push(*j);
+            }
+            let _ = client.execute(&delete_query, &params[..]);
         }
-    }
-    if let Some(ref pak_id) = final_pak_job {
-        if fetch_and_store_lines(&creds, &token, &mut qms_client, project_id, pak_id, Some("INITIAL_PAK")).is_ok() {
-            fetched_pak = true;
-        }
-    }
-
-    // Only delete old reports if we successfully fetched the new ones!
-    if fetched_cut || fetched_pak {
-        let mut delete_query = "DELETE FROM packaging_project_reports WHERE project_id = $1 AND (session_id IS NULL OR session_id = 'INITIAL_PAK')".to_string();
-        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![&project_id];
-
-        // We only keep the new job transaction IDs
-        if let Some(ref cut_id) = final_cut_job {
-            delete_query.push_str(" AND job_transaction_id != $2");
-            params.push(cut_id);
-        }
-        if let Some(ref pak_id) = final_pak_job {
-            let param_idx = params.len() + 1;
-            delete_query.push_str(&format!(" AND job_transaction_id != ${}", param_idx));
-            params.push(pak_id);
-        }
-
-        let _ = client.execute(&delete_query, &params[..]);
     } else {
         // If we failed to fetch anything from D365, check if we currently have zero reports in the database.
         // If so, fall back to seeding directly from production_group_lines in VSM reference DB so the style size variations are populated.
@@ -4175,6 +4209,37 @@ mod tests {
         assert_eq!(qty_after_a_rerun, 420, "re-seeding group A again must not change the already-combined total");
         assert_eq!(session1_lines_after_rerun, 4, "re-seeding group A again must not duplicate Session 1's already-mirrored lines");
         assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test project row");
+    }
+
+    #[test]
+    #[ignore] // manual verification against the real merged project — not part of the automated suite
+    fn verify_refresh_against_real_merged_project() {
+        let _ = dotenvy::from_filename(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+        let project_id = "PRJ-MPG-PRG-2607-000164-1789548218204";
+        let res = refresh_packaging_project_lines(project_id);
+        println!("refresh result: {:?}", res);
+        assert!(res.is_ok());
+
+        let mut client = get_connection_qms().expect("QMS connection failed");
+        let total: i64 = client
+            .query_one(
+                "SELECT COALESCE(SUM(qty_order), 0)::int8 FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL",
+                &[&project_id],
+            )
+            .map(|r| r.get(0))
+            .unwrap_or(-1);
+        println!("combined baseline qty_order total: {}", total);
+
+        let jobs: Vec<String> = client
+            .query(
+                "SELECT DISTINCT job_transaction_id FROM packaging_project_reports WHERE project_id = $1 AND session_id IS NULL",
+                &[&project_id],
+            )
+            .unwrap_or_default()
+            .iter()
+            .map(|r| r.get::<_, Option<String>>(0).unwrap_or_default())
+            .collect();
+        println!("distinct cut jobs present: {:?}", jobs);
     }
 
     #[test]

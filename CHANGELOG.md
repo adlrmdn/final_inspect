@@ -2,6 +2,10 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.4.2]
+
+- Fix: the "Sync D365" button (`refresh_packaging_project_lines`) only ever refreshed the project's single canonical production group, and explicitly deleted any `job_transaction_id` that wasn't that group's own current job as "stale" — silently wiping a merged second group's lines (1.4.0's `packaging_project_group_links`) every time it was clicked. It now resolves every group merged onto the project, fetches each one's own D365 job, and only purges a job id that's stale for every group, never another group's current one.
+
 ## [1.4.1]
 
 - Fix: when a second production group merges onto an existing project (see 1.4.0's `packaging_project_group_links`), its CMT-Cut/CMT-Pak baseline lines were never seeded at all — gated on "has this project ever been seeded", which was already true from the first group — so the merged project's "Qty Cut" baseline and the `job_trans_raf` payload's size list only ever reflected the first group, silently dropping the second group's quantities. `seed_baseline_sessions()` (extracted from `save_packaging_project`) now re-runs on every save and sums `qty_order` across every production group's rows; `fetch_and_store_lines()`'s delete-before-insert is now scoped per job transaction so re-seeding one group's lines can no longer wipe another group's.
