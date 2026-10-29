@@ -690,6 +690,33 @@ pub fn init_tables() -> Result<(), String> {
         &[],
     );
 
+    // packaging_project_group_links: portal-owned mapping of an "extra" production
+    // group (e.g. a second cutting batch for the same PO — see the vendor portal's
+    // SubconOrderExtraProductionGroup) to the "primary" production group whose
+    // packaging_projects row it should share. Written by the portal when an admin
+    // attaches/detaches an extra group; read by save_packaging_project[_db_only]
+    // so two production groups that are really one PO end up as ONE project (one
+    // inspection, one approval chain, one invoice) instead of two independent ones.
+    let _ = client.execute(
+        "CREATE TABLE IF NOT EXISTS packaging_project_group_links (
+            production_group VARCHAR(100) PRIMARY KEY,
+            primary_production_group VARCHAR(100) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )",
+        &[],
+    );
+
+    // active_production_group: the LITERAL production group most recently
+    // downloaded/refreshed for this project — unlike `production_group`
+    // (which, once a group link exists, always holds the merge's PRIMARY
+    // group — see resolve_canonical_production_group()), this always tracks
+    // whichever group was just saved. job_trans_raf queuing (both here and
+    // in the portal's RpaQueueService) reads this instead of `production_group`
+    // so that approving a "final" for a just-downloaded group queues RAF
+    // against THAT group's own D365 job transaction, not whichever group
+    // happens to be the merge's primary.
+    let _ = client.execute("ALTER TABLE packaging_projects ADD COLUMN IF NOT EXISTS active_production_group VARCHAR(100)", &[]);
+
     // 4. Create packaging_project_reports table (Session-level & project-level QC OData cycle reports)
     client.execute(
         "CREATE TABLE IF NOT EXISTS packaging_project_reports (
@@ -1074,6 +1101,32 @@ fn latest_session_is_fully_verified(client: &mut postgres::Client, project_id: &
     stage1_done && stage2_done && stage3_done
 }
 
+/// Resolves a production group to its "canonical" identity for
+/// packaging_projects row matching: if the portal has registered it as an
+/// extra/child production group of another one (same PO — see the vendor
+/// portal's SubconOrderExtraProductionGroup, e.g. a second cutting batch),
+/// this returns the primary group instead, so both share one project row
+/// (one inspection, one approval chain, one invoice) rather than ending up
+/// as two independent projects for what is really one PO.
+///
+/// Only used to decide WHICH packaging_projects row to read/write — D365
+/// lookups (job transactions, sales price) and the per-size report seeding
+/// still use the real, literal production group being downloaded, since
+/// those reflect the actual physical batch being inspected.
+///
+/// Best-effort: the link table is portal-owned and may not exist yet on an
+/// older QMS schema, or have no row for this group — either case just
+/// returns the group unchanged.
+fn resolve_canonical_production_group(client: &mut postgres::Client, pg: &str) -> String {
+    match client.query_opt(
+        "SELECT primary_production_group FROM packaging_project_group_links WHERE production_group = $1",
+        &[&pg],
+    ) {
+        Ok(Some(row)) => row.get(0),
+        _ => pg.to_string(),
+    }
+}
+
 /// DB-only upsert for existing projects when D365 is unreachable.
 /// Preserves existing job IDs and sales_price; updates status/deductions/timestamp.
 fn save_packaging_project_db_only(mut client: PooledClient, project: PackagingProject) -> Result<String, String> {
@@ -1083,10 +1136,12 @@ fn save_packaging_project_db_only(mut client: PooledClient, project: PackagingPr
     let mut final_pak_job = project.cmt_pak_job_id.clone();
     let mut final_sales_price = project.sales_price.unwrap_or(0.0);
 
+    let canonical_pg = resolve_canonical_production_group(&mut client, &project.production_group);
+
     let mut db_was_completed = false;
     if let Ok(row) = client.query_one(
         "SELECT project_id, cmt_cut_job_id, cmt_pak_job_id, sales_price, status FROM packaging_projects WHERE project_id = $1 OR production_group = $2 ORDER BY created_at DESC LIMIT 1",
-        &[&project.project_id, &project.production_group],
+        &[&project.project_id, &canonical_pg],
     ) {
         project_id = row.get(0);
         let db_cut: Option<String> = row.get(1);
@@ -1107,23 +1162,23 @@ fn save_packaging_project_db_only(mut client: PooledClient, project: PackagingPr
     let deduction_amount_val = project.deduction_amount.unwrap_or(0.0);
 
     client.execute(
-        "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+        "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, active_production_group, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
          ON CONFLICT (project_id)
-         DO UPDATE SET status = $11, cmt_cut_job_id = COALESCE($12, packaging_projects.cmt_cut_job_id), cmt_pak_job_id = COALESCE($13, packaging_projects.cmt_pak_job_id), sales_price = CASE WHEN $14 > 0 THEN $14 ELSE packaging_projects.sales_price END, has_deduction = $15, deduction_amount = $16, updated_at = NOW()",
+         DO UPDATE SET status = $11, cmt_cut_job_id = COALESCE($12, packaging_projects.cmt_cut_job_id), cmt_pak_job_id = COALESCE($13, packaging_projects.cmt_pak_job_id), sales_price = CASE WHEN $14 > 0 THEN $14 ELSE packaging_projects.sales_price END, has_deduction = $15, deduction_amount = $16, active_production_group = $17, updated_at = NOW()",
         &[
             &project_id, &project.plm_id, &project.brand, &project.season,
-            &project.article_name, &project.production_group,
+            &project.article_name, &canonical_pg,
             &project.po_info, &project.po_qty, &project.po_plan_date, &project.po_vendor,
             &project.status, &final_cut_job, &final_pak_job, &final_sales_price,
-            &has_deduction_val, &deduction_amount_val,
+            &has_deduction_val, &deduction_amount_val, &project.production_group,
         ],
     ).map_err(|e| format!("Failed to save packaging project (db-only): {}", e))?;
 
     // Adopt any portal-staged fabric lines (project_id=NULL) published before the project existed
     let _ = client.execute(
         "UPDATE packaging_project_fabric_lines SET project_id = $1 WHERE production_group = $2 AND project_id IS NULL",
-        &[&project_id, &project.production_group],
+        &[&project_id, &canonical_pg],
     );
 
     // RPA queueing moved to the portal's approval chain (Director workflow):
@@ -1148,10 +1203,12 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
     ensure_init();
     let mut client = get_connection_qms()?;
 
+    let canonical_pg = resolve_canonical_production_group(&mut client, &project.production_group);
+
     // Check if this project already exists in the DB — used to make D365 calls non-fatal for updates
     let project_exists = client.query_opt(
         "SELECT 1 FROM packaging_projects WHERE project_id = $1 OR production_group = $2 LIMIT 1",
-        &[&project.project_id, &project.production_group],
+        &[&project.project_id, &canonical_pg],
     ).map(|r| r.is_some()).unwrap_or(false);
 
     // Retrieve credentials and token — non-fatal for existing projects
@@ -1233,7 +1290,7 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
         "SELECT project_id, cmt_cut_job_id, cmt_pak_job_id, sales_price, status FROM packaging_projects
          WHERE production_group = $1
          ORDER BY created_at DESC LIMIT 1",
-        &[&project.production_group]
+        &[&canonical_pg]
     ) {
         existing_project_id = Some(row.get(0));
         existing_cut_job = row.get(1);
@@ -1310,17 +1367,17 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
     let has_deduction_val = project.has_deduction.unwrap_or(false);
     let deduction_amount_val = project.deduction_amount.unwrap_or(0.0);
     client.execute(
-        "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+        "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, po_info, po_qty, po_plan_date, po_vendor, status, cmt_cut_job_id, cmt_pak_job_id, sales_price, has_deduction, deduction_amount, active_production_group, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
          ON CONFLICT (project_id)
-         DO UPDATE SET plm_id = $2, brand = $3, season = $4, article_name = $5, production_group = $6, po_info = $7, po_qty = $8, po_plan_date = $9, po_vendor = $10, status = $11, cmt_cut_job_id = $12, cmt_pak_job_id = $13, sales_price = $14, has_deduction = $15, deduction_amount = $16, updated_at = NOW()",
+         DO UPDATE SET plm_id = $2, brand = $3, season = $4, article_name = $5, production_group = $6, po_info = $7, po_qty = $8, po_plan_date = $9, po_vendor = $10, status = $11, cmt_cut_job_id = $12, cmt_pak_job_id = $13, sales_price = $14, has_deduction = $15, deduction_amount = $16, active_production_group = $17, updated_at = NOW()",
         &[
             &project_id,
             &project.plm_id,
             &project.brand,
             &project.season,
             &project.article_name,
-            &project.production_group,
+            &canonical_pg,
             &project.po_info,
             &project.po_qty,
             &project.po_plan_date,
@@ -1331,13 +1388,14 @@ pub fn save_packaging_project(project: PackagingProject) -> Result<String, Strin
             &final_sales_price,
             &has_deduction_val,
             &deduction_amount_val,
+            &project.production_group,
         ],
     ).map_err(|e| format!("Failed to save packaging project: {}", e))?;
 
     // Adopt any portal-staged fabric lines (project_id=NULL) published before the project existed
     let _ = client.execute(
         "UPDATE packaging_project_fabric_lines SET project_id = $1 WHERE production_group = $2 AND project_id IS NULL",
-        &[&project_id, &project.production_group],
+        &[&project_id, &canonical_pg],
     );
 
     // 3. Seed detail lines (if not already present)
@@ -1581,10 +1639,15 @@ pub fn trigger_partial_process_sync(project_id: &str) -> Result<String, String> 
 pub fn queue_job_trans_raf_internal(project_id: &str) -> Result<(), String> {
     let mut client = get_connection_qms()?;
     let row = client.query_one(
-        "SELECT production_group, cmt_pak_job_id, po_info FROM packaging_projects WHERE project_id = $1",
+        "SELECT COALESCE(active_production_group, production_group), cmt_pak_job_id, po_info FROM packaging_projects WHERE project_id = $1",
         &[&project_id]
     ).map_err(|e| format!("Failed to retrieve project details: {}", e))?;
 
+    // COALESCE(active_production_group, production_group): active_production_group
+    // tracks the literal group most recently downloaded (see save_packaging_project),
+    // so a merged project's RAF targets the group this specific "final" is actually
+    // for, not whichever group the merge made canonical. Falls back to
+    // production_group for any row saved before this column existed.
     let production_group: String = row.get(0);
     let cmt_pak_job_id: Option<String> = row.get(1);
     let po_info: Option<String> = row.get(2);
@@ -3683,6 +3746,249 @@ mod tests {
             )
             .expect("Failed to delete test project during cleanup");
         assert!(deleted >= 1, "Cleanup deleted no rows — test project was not removed");
+    }
+
+    #[test]
+    fn test_resolve_canonical_production_group_live() {
+        let _ = dotenvy::from_filename(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let child_pg = format!("TEST_PRG_CHILD_{}", nonce);
+        let primary_pg = format!("TEST_PRG_PRIMARY_{}", nonce);
+
+        let mut client = get_connection_qms().expect("QMS connection failed");
+
+        // No link row yet — must return the group unchanged.
+        let resolved_before = resolve_canonical_production_group(&mut client, &child_pg);
+        assert_eq!(resolved_before, child_pg, "unlinked group must resolve to itself");
+
+        client
+            .execute(
+                "INSERT INTO packaging_project_group_links (production_group, primary_production_group, created_at) VALUES ($1, $2, NOW())",
+                &[&child_pg, &primary_pg],
+            )
+            .expect("Failed to insert test group link");
+
+        let resolved_after = resolve_canonical_production_group(&mut client, &child_pg);
+
+        let cleanup = client.execute(
+            "DELETE FROM packaging_project_group_links WHERE production_group = $1",
+            &[&child_pg],
+        );
+
+        assert_eq!(resolved_after, primary_pg, "linked group must resolve to its primary group");
+        assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test link row");
+    }
+
+    #[test]
+    fn test_extra_group_adopts_primary_project_live() {
+        let _ = dotenvy::from_filename(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+        // Proves the actual merge: saving a project for a "child" production
+        // group that's linked to a "primary" one must reuse the PRIMARY's
+        // existing project_id, not create a second project.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let primary_pg = format!("TEST_PRG_MERGE_PRIMARY_{}", nonce);
+        let child_pg = format!("TEST_PRG_MERGE_CHILD_{}", nonce);
+        let primary_project_id = format!("TEST_MERGE_PROJECT_{}", nonce);
+        let child_requested_project_id = format!("TEST_MERGE_PROJECT_CHILD_REQ_{}", nonce);
+
+        let mut client = get_connection_qms().expect("QMS connection failed");
+
+        // Seed the primary project directly (DB-only — no D365 dependency).
+        client
+            .execute(
+                "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, status, has_deduction, deduction_amount, created_at, updated_at)
+                 VALUES ($1, 'TEST_PLM', 'Minimal', 'FALL-26', 'TEST ARTICLE - DO NOT USE', $2, 'downloaded', false, 0.0, NOW(), NOW())",
+                &[&primary_project_id, &primary_pg],
+            )
+            .expect("Failed to seed primary test project");
+
+        // Register the link: child_pg belongs to primary_pg's project.
+        client
+            .execute(
+                "INSERT INTO packaging_project_group_links (production_group, primary_production_group, created_at) VALUES ($1, $2, NOW())",
+                &[&child_pg, &primary_pg],
+            )
+            .expect("Failed to insert test group link");
+
+        // Now "download" the child group under a FRESH, different project_id —
+        // exactly what the console does when it doesn't yet know this group is
+        // an extra of an existing project.
+        let child_project = PackagingProject {
+            project_id: child_requested_project_id.clone(),
+            plm_id: "TEST_PLM".to_string(),
+            brand: "Minimal".to_string(),
+            season: "FALL-26".to_string(),
+            article_name: "TEST ARTICLE - DO NOT USE".to_string(),
+            production_group: child_pg.clone(),
+            po_info: None,
+            po_qty: None,
+            po_plan_date: None,
+            po_vendor: None,
+            status: "downloaded".to_string(),
+            cmt_cut_job_id: Some("TEST_JOB_CUT_999".to_string()),
+            cmt_pak_job_id: Some("TEST_JOB_PAK_999".to_string()),
+            sales_price: None,
+            verified_doc: None,
+            has_deduction: None,
+            deduction_amount: None,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        };
+
+        let result_project_id = save_packaging_project_db_only(client, child_project)
+            .expect("save_packaging_project_db_only failed");
+
+        let mut client = get_connection_qms().expect("QMS connection failed (post-save)");
+        let row_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM packaging_projects WHERE production_group IN ($1, $2)",
+                &[&primary_pg, &child_pg],
+            )
+            .map(|r| r.get(0))
+            .unwrap_or(-1);
+
+        let cleanup = client.execute(
+            "DELETE FROM packaging_projects WHERE project_id = $1",
+            &[&primary_project_id],
+        );
+        let cleanup_link = client.execute(
+            "DELETE FROM packaging_project_group_links WHERE production_group = $1",
+            &[&child_pg],
+        );
+
+        assert_eq!(
+            result_project_id, primary_project_id,
+            "child group must adopt the primary group's existing project_id instead of minting a new one"
+        );
+        assert_eq!(row_count, 1, "exactly one packaging_projects row must exist for the merged pair, not two");
+        assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test project row");
+        assert!(cleanup_link.is_ok() && cleanup_link.unwrap() >= 1, "cleanup failed to remove the test link row");
+    }
+
+    #[test]
+    fn test_active_production_group_tracks_latest_download_live() {
+        // Proves the RAF-targeting fix: production_group stays pinned to the
+        // merge's primary group, while active_production_group always reflects
+        // whichever literal group was most recently saved — so a "final"
+        // approved right after downloading group B queues RAF against B, not
+        // whatever the merge made canonical.
+        let _ = dotenvy::from_filename(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+        ensure_init(); // applies the active_production_group/group_links DDL before raw inserts below
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let primary_pg = format!("TEST_PRG_ACTIVE_PRIMARY_{}", nonce);
+        let child_pg = format!("TEST_PRG_ACTIVE_CHILD_{}", nonce);
+        let shared_project_id = format!("TEST_ACTIVE_PROJECT_{}", nonce);
+
+        let mut client = get_connection_qms().expect("QMS connection failed");
+
+        client
+            .execute(
+                "INSERT INTO packaging_projects (project_id, plm_id, brand, season, article_name, production_group, status, has_deduction, deduction_amount, active_production_group, created_at, updated_at)
+                 VALUES ($1, 'TEST_PLM', 'Minimal', 'FALL-26', 'TEST ARTICLE - DO NOT USE', $2, 'downloaded', false, 0.0, $2, NOW(), NOW())",
+                &[&shared_project_id, &primary_pg],
+            )
+            .expect("Failed to seed primary test project");
+
+        client
+            .execute(
+                "INSERT INTO packaging_project_group_links (production_group, primary_production_group, created_at) VALUES ($1, $2, NOW())",
+                &[&child_pg, &primary_pg],
+            )
+            .expect("Failed to insert test group link");
+
+        // "Download" the child group (a new final for batch B) under the SAME shared project.
+        let child_save = PackagingProject {
+            project_id: format!("TEST_ACTIVE_PROJECT_CHILD_REQ_{}", nonce),
+            plm_id: "TEST_PLM".to_string(),
+            brand: "Minimal".to_string(),
+            season: "FALL-26".to_string(),
+            article_name: "TEST ARTICLE - DO NOT USE".to_string(),
+            production_group: child_pg.clone(),
+            po_info: None,
+            po_qty: None,
+            po_plan_date: None,
+            po_vendor: None,
+            status: "downloaded".to_string(),
+            cmt_cut_job_id: Some("TEST_JOB_CUT_CHILD".to_string()),
+            cmt_pak_job_id: Some("TEST_JOB_PAK_CHILD".to_string()),
+            sales_price: None,
+            verified_doc: None,
+            has_deduction: None,
+            deduction_amount: None,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        };
+        save_packaging_project_db_only(client, child_save).expect("save for child group failed");
+
+        let mut client = get_connection_qms().expect("QMS connection failed (after child save)");
+        let row = client
+            .query_one(
+                "SELECT production_group, active_production_group FROM packaging_projects WHERE project_id = $1",
+                &[&shared_project_id],
+            )
+            .expect("Failed to read project after child save");
+        let pg_after_child: String = row.get(0);
+        let active_after_child: Option<String> = row.get(1);
+
+        // Now "download" the primary group again (a later final back on batch A).
+        let primary_save = PackagingProject {
+            project_id: format!("TEST_ACTIVE_PROJECT_PRIMARY_REQ_{}", nonce),
+            plm_id: "TEST_PLM".to_string(),
+            brand: "Minimal".to_string(),
+            season: "FALL-26".to_string(),
+            article_name: "TEST ARTICLE - DO NOT USE".to_string(),
+            production_group: primary_pg.clone(),
+            po_info: None,
+            po_qty: None,
+            po_plan_date: None,
+            po_vendor: None,
+            status: "downloaded".to_string(),
+            cmt_cut_job_id: Some("TEST_JOB_CUT_PRIMARY".to_string()),
+            cmt_pak_job_id: Some("TEST_JOB_PAK_PRIMARY".to_string()),
+            sales_price: None,
+            verified_doc: None,
+            has_deduction: None,
+            deduction_amount: None,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        };
+        let client2 = get_connection_qms().expect("QMS connection failed (second save)");
+        save_packaging_project_db_only(client2, primary_save).expect("save for primary group (again) failed");
+
+        let mut client = get_connection_qms().expect("QMS connection failed (after primary re-save)");
+        let row2 = client
+            .query_one(
+                "SELECT production_group, active_production_group FROM packaging_projects WHERE project_id = $1",
+                &[&shared_project_id],
+            )
+            .expect("Failed to read project after primary re-save");
+        let pg_after_primary: String = row2.get(0);
+        let active_after_primary: Option<String> = row2.get(1);
+
+        let cleanup = client.execute(
+            "DELETE FROM packaging_projects WHERE project_id = $1",
+            &[&shared_project_id],
+        );
+        let cleanup_link = client.execute(
+            "DELETE FROM packaging_project_group_links WHERE production_group = $1",
+            &[&child_pg],
+        );
+
+        assert_eq!(pg_after_child, primary_pg, "production_group must stay pinned to the primary group after the child download");
+        assert_eq!(active_after_child, Some(child_pg.clone()), "active_production_group must track the just-downloaded child group");
+        assert_eq!(pg_after_primary, primary_pg, "production_group must still be the primary group after re-downloading it");
+        assert_eq!(active_after_primary, Some(primary_pg.clone()), "active_production_group must switch back to the primary group once it's the latest download");
+        assert!(cleanup.is_ok() && cleanup.unwrap() >= 1, "cleanup failed to remove the test project row");
+        assert!(cleanup_link.is_ok() && cleanup_link.unwrap() >= 1, "cleanup failed to remove the test link row");
     }
 
     #[test]

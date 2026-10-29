@@ -2,6 +2,11 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.4.0]
+
+- Feature: a production group pinned as an "extra" group on the vendor portal's SubconOrder (e.g. a second cutting batch for the same PO) now resolves to the SAME `packaging_projects` row as its primary group (`packaging_project_group_links`, portal-written), instead of becoming a second, independent project — one inspection, one approval chain, one invoice/deduction RPA job per PO.
+- Fix: `job_trans_raf` RPA queuing (`queue_job_trans_raf_internal`, and the portal's matching `RpaQueueService::queueJobTransRaf`) now targets `active_production_group` — the literal group most recently downloaded/refreshed — instead of the merge-pinned `production_group`, so approving a "final" for a just-downloaded batch queues RAF against that batch, not always the merge's primary group.
+
 ## [1.2.5]
 
 - Fix: D365 line sync (`fetch_and_store_lines`) no longer wipes out previously-synced size rows (e.g. size S) when Dynamics returns an empty or partial `JobTransactionLinesDetails` response. The delete+reinsert is now skipped on an empty response and wrapped in a transaction so a mid-loop insert failure can't leave rows deleted with nothing reinserted.
