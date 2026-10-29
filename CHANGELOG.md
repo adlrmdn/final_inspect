@@ -2,6 +2,10 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.4.3]
+
+- Fix: the "QTY CUTT (BASELINE)" card read `base_lines.find(...)` for the active size — same bug class as 1.4.1's PDF fix, just in the frontend: a merged project can have more than one baseline row per size (one per production group's job transaction), so `.find()` silently showed only one group's quantity instead of the combined total. Now sums `total_good_qty` across every matching row. Swept the rest of the frontend for the same pattern — everything else keys off a single inspection session's own report lines (one row per size by design, not multi-job), so nothing else needed the same fix.
+
 ## [1.4.2]
 
 - Fix: the "Sync D365" button (`refresh_packaging_project_lines`) only ever refreshed the project's single canonical production group, and explicitly deleted any `job_transaction_id` that wasn't that group's own current job as "stale" — silently wiping a merged second group's lines (1.4.0's `packaging_project_group_links`) every time it was clicked. It now resolves every group merged onto the project, fetches each one's own D365 job, and only purges a job id that's stale for every group, never another group's current one.

@@ -233,9 +233,14 @@ export const BentoInspectionCards: React.FC<BentoInspectionCardsProps> = ({
       );
     }
 
-    // Look up cutting pcs from base lines (CMT-Cut)
-    const baseLine = (activePackagingProject?.base_lines || []).find((l: any) => l.size_val === currentSize);
-    const qtyCutting = baseLine ? baseLine.total_good_qty || 0 : 0;
+    // Look up cutting pcs from base lines (CMT-Cut) — SUM across every matching
+    // row, not just the first. A merged project (an extra production group
+    // attached to the same order/PO) can have more than one baseline row per
+    // size, one per job transaction/production group; .find() here used to
+    // silently show only one group's qty instead of the combined total.
+    const qtyCutting = (activePackagingProject?.base_lines || [])
+      .filter((l: any) => l.size_val === currentSize)
+      .reduce((sum: number, l: any) => sum + (l.total_good_qty || 0), 0);
 
     // Reject sub-groups calculations
     const rBahan = activeLine.reject_bahan || 0;
