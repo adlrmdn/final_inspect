@@ -2,6 +2,10 @@
 
 All notable changes to the Chimera QC Console are documented in this file.
 
+## [1.4.4]
+
+- Fix: same bug class as 1.4.3's "QTY CUTT (BASELINE)" card fix, in two spots that sweep missed. `isBalanceMatching` (gates the Verify button in `FormView.tsx`) and `calculateDeductions` (`utils/calculations.ts`) both read `base_lines.find(bl => bl.size_val === size)` — for a merged project this silently picked only one production group's `total_good_qty` per size instead of summing across every group's job transaction, so the balance check could never match the real entered quantities (Verify stayed permanently disabled) and the 1% allowed-reject limit was computed against an understated cutting total. Both now sum every matching `base_lines` row per size.
+
 ## [1.4.3]
 
 - Fix: the "QTY CUTT (BASELINE)" card read `base_lines.find(...)` for the active size — same bug class as 1.4.1's PDF fix, just in the frontend: a merged project can have more than one baseline row per size (one per production group's job transaction), so `.find()` silently showed only one group's quantity instead of the combined total. Now sums `total_good_qty` across every matching row. Swept the rest of the frontend for the same pattern — everything else keys off a single inspection session's own report lines (one row per size by design, not multi-job), so nothing else needed the same fix.
