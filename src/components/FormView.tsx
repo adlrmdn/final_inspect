@@ -837,8 +837,16 @@ export default function FormView({
     let totalGoodAndReject = 0;
 
     for (const line of reportLines) {
-      const baseLine = (activePackagingProject.base_lines || []).find((bl: any) => bl.size_val === line.size_val);
-      const cuttingQty = baseLine ? (baseLine.total_good_qty || 0) : 0;
+      // SUM across every matching row, not just the first — a merged project (an
+      // extra production group attached to the same order/PO) can have more than
+      // one baseline row per size, one per job transaction/production group.
+      // .find() here used to silently use only one group's qty instead of the
+      // combined total, so a merged project's balance could never match and the
+      // Verify button stayed permanently disabled. Same bug class fixed in
+      // BentoInspectionCards.tsx (see 1.4.3's QTY CUTT (BASELINE) card fix) — missed here.
+      const cuttingQty = (activePackagingProject.base_lines || [])
+        .filter((bl: any) => bl.size_val === line.size_val)
+        .reduce((sum: number, bl: any) => sum + (bl.total_good_qty || 0), 0);
       totalCutting += cuttingQty;
 
       // Calculate other sessions' good qty

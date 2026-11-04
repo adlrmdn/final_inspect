@@ -47,8 +47,14 @@ export const calculateDeductions = (project: any, session: any): DeductionResult
     const rejectProduksi = rCutting + rSewing + rFinishing + rPrinting + rEmbro + rWashing;
     sumRejectProduksi += rejectProduksi;
 
-    const baseLine = (project.base_lines || []).find((bl: any) => bl.size_val === line.size_val);
-    const cuttingQty = baseLine ? (baseLine.total_good_qty || 0) : 0;
+    // SUM across every matching row, not just the first — a merged project (an
+    // extra production group attached to the same order/PO) can have more than
+    // one baseline row per size, one per job transaction/production group.
+    // .find() here used to silently use only one group's qty, understating the
+    // 1% allowed-reject limit below and overcharging the vendor's deduction.
+    const cuttingQty = (project.base_lines || [])
+      .filter((bl: any) => bl.size_val === line.size_val)
+      .reduce((sum: number, bl: any) => sum + (bl.total_good_qty || 0), 0);
     sumCuttingQty += cuttingQty;
 
     sumBarangHilang += (line.barang_hilang || 0);
